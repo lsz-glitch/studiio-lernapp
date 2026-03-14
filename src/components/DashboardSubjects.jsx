@@ -319,7 +319,8 @@ export default function DashboardSubjects({ user, onOpenSubject }) {
                   ) : (
                     <article
                       key={subject.id}
-                      className="rounded-2xl border border-studiio-lavender/50 bg-white/80 px-4 py-3 flex flex-col gap-1"
+                      className="rounded-2xl border border-studiio-lavender/50 bg-white/80 px-4 py-3 flex flex-col gap-1 cursor-pointer hover:border-studiio-accent/70 hover:bg-studiio-sky/30 transition-colors"
+                      onClick={() => onOpenSubject && onOpenSubject(subject)}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <h4 className="font-medium text-studiio-ink">{subject.name}</h4>
@@ -333,20 +334,16 @@ export default function DashboardSubjects({ user, onOpenSubject }) {
                           {new Date(subject.exam_date).toLocaleDateString('de-DE')}
                         </p>
                       )}
-                      <div className="flex justify-between items-center pt-1 gap-2">
+                      <div className="flex justify-end pt-1 gap-2">
                         <button
                           type="button"
-                          onClick={() => startEdit(subject)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            startEdit(subject)
+                          }}
                           className="text-xs font-medium text-studiio-accent hover:underline"
                         >
                           Bearbeiten
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onOpenSubject && onOpenSubject(subject)}
-                          className="text-[11px] font-medium text-studiio-ink bg-studiio-mint/70 hover:bg-studiio-mint/90 rounded-full px-2 py-0.5"
-                        >
-                          Öffnen
                         </button>
                       </div>
                     </article>
