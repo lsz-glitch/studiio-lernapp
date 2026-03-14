@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
 import SettingsClaudeKey from './components/SettingsClaudeKey'
+import DashboardSubjects from './components/DashboardSubjects'
 import './App.css'
 
 function App() {
@@ -106,14 +107,7 @@ function App() {
       </header>
       <main className="studiio-main space-y-6">
         {activeView === 'overview' && (
-          <section>
-            <h2 className="text-xl font-semibold text-studiio-ink mb-2">
-              Willkommen in Studiio
-            </h2>
-            <p className="text-lg">
-              Du bist angemeldet. Als Nächstes richten wir dein Lern-Dashboard und deine Fächer ein.
-            </p>
-          </section>
+          <DashboardSubjects user={user} />
         )}
         {activeView === 'settings' && <SettingsClaudeKey user={user} />}
       </main>

@@ -15,6 +15,7 @@ export default function SettingsClaudeKey({ user }) {
   const [keyValue, setKeyValue] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [showHelp, setShowHelp] = useState(false)
 
   useEffect(() => {
     let isMounted = true
@@ -135,9 +136,35 @@ export default function SettingsClaudeKey({ user }) {
 
       <form onSubmit={handleSave} className="space-y-4 max-w-lg">
         <div>
-          <label htmlFor="claude-key" className="block text-sm font-medium text-studiio-ink mb-1">
-            Claude API Key
-          </label>
+          <div className="flex items-center gap-2 mb-1">
+            <label htmlFor="claude-key" className="block text-sm font-medium text-studiio-ink">
+              Claude API Key
+            </label>
+            <button
+              type="button"
+              onClick={() => setShowHelp((v) => !v)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-studiio-lavender/70 text-xs font-semibold text-studiio-muted hover:bg-studiio-lavender/40"
+              aria-label="Hinweis zum Claude API Key"
+            >
+              ?
+            </button>
+          </div>
+          {showHelp && (
+            <div className="mb-2 rounded-lg border border-studiio-lavender/60 bg-studiio-sky/40 px-3 py-2 text-xs text-studiio-muted">
+              <p className="font-medium text-studiio-ink mb-1">Woher bekomme ich den Claude API Key?</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>Erstelle ein Konto bei Anthropic / Claude und melde dich dort an.</li>
+                <li>Gehe in deinem Claude-Konto zu den API- oder Developer-Einstellungen.</li>
+                <li>Erstelle dort einen neuen API Key und kopiere ihn.</li>
+              </ol>
+              <p className="mt-2">
+                Wenn du den Key erzeugst, wird er dir in Claude meist nur ein einziges Mal komplett angezeigt. Speichere ihn also unbedingt sicher (z.&nbsp;B. in einem Passwort-Manager), bevor du das Fenster schließt.
+              </p>
+              <p className="mt-2">
+                Diesen Key fügst du hier ein. Er wird nur in deinem Supabase-Profil gespeichert und nicht in GitHub oder dem öffentlichen Code geteilt. Die Kosten für Anfragen trägst du selbst über dein Claude-Konto.
+              </p>
+            </div>
+          )}
           <PasswordInput
             id="claude-key"
             value={keyValue}
