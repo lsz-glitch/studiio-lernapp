@@ -28,6 +28,12 @@ export default function DashboardSubjects({ user }) {
   const [saving, setSaving] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
 
+  const [editingId, setEditingId] = useState(null)
+  const [editName, setEditName] = useState('')
+  const [editGroup, setEditGroup] = useState('')
+  const [editExamDate, setEditExamDate] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+
   useEffect(() => {
     let isMounted = true
     async function loadSubjects() {
@@ -106,15 +112,60 @@ export default function DashboardSubjects({ user }) {
     setExamDate('')
   }
 
+  function startEdit(subject) {
+    setEditingId(subject.id)
+    setEditName(subject.name || '')
+    setEditGroup(subject.group_label || '')
+    setEditExamDate(subject.exam_date || '')
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setEditName('')
+    setEditGroup('')
+    setEditExamDate('')
+  }
+
+  async function handleUpdateSubject(e) {
+    e.preventDefault()
+    if (!editingId) return
+    setError('')
+
+    if (!editName.trim()) {
+      setError('Bitte gib deinem Fach einen Namen.')
+      return
+    }
+
+    setEditSaving(true)
+    const { data, error: err } = await supabase
+      .from('subjects')
+      .update({
+        name: editName.trim(),
+        group_label: editGroup.trim() || null,
+        exam_date: editExamDate || null,
+      })
+      .eq('id', editingId)
+      .select('id, name, group_label, exam_date')
+      .single()
+
+    setEditSaving(false)
+
+    if (err) {
+      console.error('Fehler beim Bearbeiten eines Fachs:', err)
+      setError(`Fach konnte nicht aktualisiert werden: ${err.message || 'Bitte später erneut versuchen.'}`)
+      return
+    }
+
+    setSubjects((prev) => prev.map((s) => (s.id === data.id ? data : s)))
+    cancelEdit()
+  }
+
   return (
     <div className="space-y-6">
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold text-studiio-ink">Deine Fächer</h2>
-            <p className="text-sm text-studiio-muted">
-              Ordne deine Fächer Semestern oder eigenen Kategorien zu und behalte deine Klausurtermine im Blick.
-            </p>
           </div>
           <button
             type="button"
@@ -205,25 +256,95 @@ export default function DashboardSubjects({ user }) {
                 {groupLabel === 'Ohne Zuordnung' ? 'Ohne Semester/Kategorie' : groupLabel}
               </h3>
               <div className="grid gap-3 md:grid-cols-2">
-                {items.map((subject) => (
-                  <article
-                    key={subject.id}
-                    className="rounded-2xl border border-studiio-lavender/50 bg-white/80 px-4 py-3 flex flex-col gap-1"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="font-medium text-studiio-ink">{subject.name}</h4>
-                      <span className="inline-flex items-center rounded-full bg-studiio-sky/60 px-2.5 py-0.5 text-xs font-medium text-studiio-ink">
-                        {formatCountdown(subject.exam_date)}
-                      </span>
-                    </div>
-                    {subject.exam_date && (
-                      <p className="text-xs text-studiio-muted">
-                        Klausurtermin:&nbsp;
-                        {new Date(subject.exam_date).toLocaleDateString('de-DE')}
-                      </p>
-                    )}
-                  </article>
-                ))}
+                {items.map((subject) =>
+                  editingId === subject.id ? (
+                    <form
+                      key={subject.id}
+                      onSubmit={handleUpdateSubject}
+                      className="rounded-2xl border border-studiio-lavender/70 bg-white px-4 py-3 flex flex-col gap-2"
+                    >
+                      <div>
+                        <label className="block text-xs font-medium text-studiio-ink mb-1">
+                          Fachname
+                        </label>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          required
+                          className="studiio-input w-full"
+                        />
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div>
+                          <label className="block text-xs font-medium text-studiio-ink mb-1">
+                            Semester / Kategorie
+                          </label>
+                          <input
+                            type="text"
+                            value={editGroup}
+                            onChange={(e) => setEditGroup(e.target.value)}
+                            className="studiio-input w-full"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-studiio-ink mb-1">
+                            Klausurtermin
+                          </label>
+                          <input
+                            type="date"
+                            value={editExamDate}
+                            onChange={(e) => setEditExamDate(e.target.value)}
+                            className="studiio-input w-full"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="rounded-lg border border-studiio-lavender/70 px-3 py-1.5 text-xs font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
+                        >
+                          Abbrechen
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={editSaving}
+                          className="studiio-btn-primary text-xs"
+                        >
+                          {editSaving ? 'Speichern …' : 'Speichern'}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <article
+                      key={subject.id}
+                      className="rounded-2xl border border-studiio-lavender/50 bg-white/80 px-4 py-3 flex flex-col gap-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="font-medium text-studiio-ink">{subject.name}</h4>
+                        <span className="inline-flex items-center rounded-full bg-studiio-sky/60 px-2.5 py-0.5 text-xs font-medium text-studiio-ink">
+                          {formatCountdown(subject.exam_date)}
+                        </span>
+                      </div>
+                      {subject.exam_date && (
+                        <p className="text-xs text-studiio-muted">
+                          Klausurtermin:&nbsp;
+                          {new Date(subject.exam_date).toLocaleDateString('de-DE')}
+                        </p>
+                      )}
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(subject)}
+                          className="text-xs font-medium text-studiio-accent hover:underline"
+                        >
+                          Bearbeiten
+                        </button>
+                      </div>
+                    </article>
+                  ),
+                )}
               </div>
             </div>
           ))
