@@ -17,7 +17,7 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-export default function DashboardSubjects({ user }) {
+export default function DashboardSubjects({ user, onOpenSubject }) {
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -333,13 +333,20 @@ export default function DashboardSubjects({ user }) {
                           {new Date(subject.exam_date).toLocaleDateString('de-DE')}
                         </p>
                       )}
-                      <div className="flex justify-end pt-1">
+                      <div className="flex justify-between items-center pt-1 gap-2">
                         <button
                           type="button"
                           onClick={() => startEdit(subject)}
                           className="text-xs font-medium text-studiio-accent hover:underline"
                         >
                           Bearbeiten
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenSubject && onOpenSubject(subject)}
+                          className="text-[11px] font-medium text-studiio-ink bg-studiio-mint/70 hover:bg-studiio-mint/90 rounded-full px-2 py-0.5"
+                        >
+                          Öffnen
                         </button>
                       </div>
                     </article>

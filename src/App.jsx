@@ -4,6 +4,7 @@ import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
 import SettingsClaudeKey from './components/SettingsClaudeKey'
 import DashboardSubjects from './components/DashboardSubjects'
+import SubjectDetail from './components/SubjectDetail'
 import './App.css'
 
 function App() {
@@ -11,6 +12,7 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authMode, setAuthMode] = useState('login') // 'login' | 'register'
   const [activeView, setActiveView] = useState('overview') // 'overview' | 'settings'
+  const [selectedSubject, setSelectedSubject] = useState(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -72,7 +74,10 @@ function App() {
           <nav className="flex items-center gap-2 text-sm">
             <button
               type="button"
-              onClick={() => setActiveView('overview')}
+              onClick={() => {
+                setActiveView('overview')
+                setSelectedSubject(null)
+              }}
               className={
                 activeView === 'overview'
                   ? 'rounded-full bg-studiio-mint/70 px-3 py-1 font-medium text-studiio-ink'
@@ -107,7 +112,18 @@ function App() {
       </header>
       <main className="studiio-main space-y-6">
         {activeView === 'overview' && (
-          <DashboardSubjects user={user} />
+          selectedSubject ? (
+            <SubjectDetail
+              user={user}
+              subject={selectedSubject}
+              onBack={() => setSelectedSubject(null)}
+            />
+          ) : (
+            <DashboardSubjects
+              user={user}
+              onOpenSubject={(subject) => setSelectedSubject(subject)}
+            />
+          )
         )}
         {activeView === 'settings' && <SettingsClaudeKey user={user} />}
       </main>
