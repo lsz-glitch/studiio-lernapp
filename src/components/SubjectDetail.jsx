@@ -1,4 +1,37 @@
+import React, { useState } from 'react'
 import SubjectMaterials from './SubjectMaterials'
+import LectureTutor from './LectureTutor'
+
+class SubjectDetailErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Fehler in SubjectDetail:', error, info)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="space-y-2 rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+          <p className="text-sm font-semibold text-red-700">
+            Es ist ein Fehler im Fach-Detailbereich aufgetreten.
+          </p>
+          <p className="text-xs text-red-700">
+            {this.state.error?.message || 'Bitte lade die Seite neu oder gehe zurück zur Übersicht.'}
+          </p>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 function formatCountdown(examDate) {
   if (!examDate) return 'Kein Termin eingetragen'
@@ -15,7 +48,20 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-export default function SubjectDetail({ user, subject, onBack }) {
+function SubjectDetailInner({ user, subject, onBack }) {
+  const [activeLecture, setActiveLecture] = useState(null)
+
+  if (activeLecture) {
+    return (
+      <LectureTutor
+        user={user}
+        subject={subject}
+        material={activeLecture}
+        onBack={() => setActiveLecture(null)}
+      />
+    )
+  }
+
   return (
     <div className="space-y-4">
       <button
@@ -46,8 +92,20 @@ export default function SubjectDetail({ user, subject, onBack }) {
         )}
       </section>
 
-      <SubjectMaterials user={user} subject={subject} />
+      <SubjectMaterials
+        user={user}
+        subject={subject}
+        onOpenLecture={(material) => setActiveLecture(material)}
+      />
     </div>
+  )
+}
+
+export default function SubjectDetail(props) {
+  return (
+    <SubjectDetailErrorBoundary>
+      <SubjectDetailInner {...props} />
+    </SubjectDetailErrorBoundary>
   )
 }
 

@@ -11,7 +11,7 @@ const CATEGORY_OPTIONS = [
   'Zusatzmaterialien',
 ]
 
-export default function SubjectMaterials({ user, subject }) {
+export default function SubjectMaterials({ user, subject, onOpenLecture }) {
   const [materials, setMaterials] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -312,6 +312,15 @@ export default function SubjectMaterials({ user, subject }) {
                           {(m.size_bytes / (1024 * 1024)).toFixed(2)} MB
                         </p>
                       </div>
+                      {m.category === 'Vorlesung' && onOpenLecture && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenLecture(m)}
+                          className="text-[11px] font-medium text-studiio-accent hover:underline"
+                        >
+                          Im Tutor öffnen
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>
