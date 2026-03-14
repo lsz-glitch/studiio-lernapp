@@ -1,0 +1,231 @@
+# Studiio — .cursorrules
+# ========================
+# Vollständige Projektbeschreibung für den KI-Assistenten in Cursor.
+# Diese Datei immer als Kontext verwenden.
+
+## Über das Projekt
+Studiio ist eine Web-App für Studierende zum organisierten, KI-gestützten Lernen.
+Nutzer laden ihre Fächer und Unterlagen hoch und arbeiten diese mit einem KI-Tutor durch.
+Die App erstellt automatisch Vokabeln/Karteikarten, trackt den Fortschritt und hilft bei der Prüfungsvorbereitung.
+
+## Entwicklerin
+- Anfängerin mit Grundkenntnissen in HTML & CSS
+- Bitte alle Änderungen kurz auf Deutsch erklären
+- Immer ein Feature nach dem anderen — nie zu viel auf einmal
+- Wenn etwas geändert wird, kurz erklären WARUM
+- Bei Fehlern: erst erklären was das Problem ist, dann lösen
+- Keine unnötig komplizierten Lösungen — so einfach wie möglich
+
+---
+
+## Tech-Stack
+- Frontend: React (mit Tailwind CSS)
+- Datenbank & Auth: Supabase (Free Plan)
+- KI: Anthropic Claude API (BYOK)
+- Push-Nachrichten: Make (ehemals Integromat)
+- Hosting: Vercel
+
+## Wichtige Konstanten (in separater config.js speichern)
+- MAX_STORAGE_PER_USER_MB = 20 // Einfach anpassbar
+- DEFAULT_EXAM_TIMER_MINUTES = 90 // Einfach anpassbar
+
+---
+
+## Design
+- Stil: Modern, minimalistisch, macht gute Laune
+- Farben: Pastell-Töne (fröhlich, nicht zu bunt, angenehm für lange Lernsessions)
+- Dark Mode: Ja (umschaltbar in Einstellungen)
+- Schrift: Inter oder ähnlich — klar und gut lesbar
+- Layout: Responsive — funktioniert auf Desktop und Mobil
+- Sprachen: Deutsch & Englisch (umschaltbar)
+
+---
+
+## BYOK — Bring Your Own API Key
+- Nutzer hinterlegt seinen eigenen Claude API Key in den Einstellungen
+- Key wird ausschließlich im Supabase-Profil des Nutzers gespeichert (verschlüsselt)
+- Kein API Key wird serverseitig zentral gespeichert
+- Bei fehlendem Key: freundliche Aufforderung den Key einzutragen
+- Nutzer trägt die Kosten seiner eigenen KI-Nutzung
+
+---
+
+## Account & Einstellungen
+- Login / Registrierung (via Supabase Auth)
+- Name, E-Mail, Passwort ändern
+- Account löschen
+- Claude API Key hinterlegen / ändern / löschen
+- Push-Nachrichten an/aus
+- Uhrzeit für tägliche Erinnerung konfigurierbar
+- Streak-Alarm an/aus
+- Make-Verknüpfung einrichten
+- Dark Mode an/aus
+- Sprache umschalten (DE/EN)
+- Daten exportieren
+
+---
+
+## Struktur & Fächer
+- Fächer anlegen — sortiert nach Semester oder eigenen Kategorien
+- Pro Fach: Klausurtermin eintragbar → zeigt Countdown "noch X Tage"
+- Unterlagen hochladen mit Kategorie pro Datei:
+  - Vorlesung
+  - Übung
+  - Tutorium
+  - Probeklausur
+  - Zusatzmaterialien
+- Alle hochgeladenen Dateien im Fach einsehbar, sortiert nach Kategorien
+- Notizen pro Fach & pro Unterlagen-Seite (auf der entsprechenden Seite gespeichert)
+- Zusammenfassung pro Fach:
+  - Wird beim Durcharbeiten der Slides automatisch erweitert
+  - Jederzeit abrufbar
+
+---
+
+## Vokabeln / Karteikarten (= dasselbe System, wie Anki)
+- Werden nach dem Durcharbeiten einer Datei automatisch erstellt
+- Können jederzeit manuell zu einer Datei erstellt werden
+- Vor Erstellung fragt KI: "Worauf soll geachtet werden?" + "Möchtest du einen Fokus setzen?"
+- Manuell eigene Vokabeln erstellen möglich
+- Häufig gestellte Fragen fließen stärker in die Erstellung ein
+- Alle Folien/Inhalte müssen abgedeckt sein
+- Pro Fach eigenes Vokabel-System
+
+### Formate (jederzeit zwischen diesen wechselbar):
+- Definitions-Abfrage
+- Offenes Antwortfeld (KI bewertet die Antwort)
+- Multiple Choice
+- Single Choice
+
+### Format-Wechsel:
+- Nutzer kann jede Vokabel nachträglich in ein anderes Format umwandeln
+- Beispiel: Definitions-Abfrage → Offener Text → Multiple Choice
+
+---
+
+## KI-Tutor Modus
+Abhängig vom Dateityp unterschiedlicher Ablauf:
+
+### 📖 Vorlesungen (alle Fächer)
+- Slide für Slide durchgehen
+- KI erkennt welche Slides zusammengehören und clustert diese
+- KI erklärt zuerst: mit Beispielen, Umformulierungen, verständlich
+- Layout: Links Slides, rechts Tutor-Chat
+- Nach Erklärung: Verständnisfragen an den Nutzer
+- Nachfragen jederzeit möglich
+- Überspringen möglich mit Markierung:
+  - "Kann ich bereits"
+  - "Nicht relevant"
+- Zusammenfassung des Fachs wird beim Durcharbeiten automatisch erweitert
+
+### 📝 Übungen & Tutorien (allgemein)
+- Aufgabe für Aufgabe durchgehen
+- Nutzer versucht ZUERST selbst zu antworten
+- Dann gibt KI Feedback: was gut war, was schlecht war
+- Mind. 1 Karteikarte pro Aufgabe wird erstellt
+- Bei "Stimmt die Aussage"-Aufgaben → jede Aussage = eigene Karteikarte
+
+### ⚖️ Recht — Sondermodus
+- Vorlesungen werden normal erklärt (wie oben)
+- Nutzer kann eigene Fälle + Lösungen eintragen
+- Diese Fälle werden dann zum Üben verwendet
+- Bei Übungen & Tutorien: stumpf abgearbeitet (kein richtig/falsch)
+- KI filtert nach Abweichungen von der eingetragenen Musterlösung
+
+### ➗ Mathe — Sondermodus
+- Vorlesungen: normal erklärt (wie oben)
+- Übungen & Tutorien: jede Aufgabe einzeln
+- Nutzer rechnet/löst ZUERST selbst
+- Dann KI-Feedback auf die Lösung
+
+---
+
+## Prüfungs-Simulation
+- Aufbau wählbar: Single/Multiple Choice, Textfragen oder Mix
+- Basis: Altklausur falls vorhanden → Aufgaben werden extrahiert
+- Falls keine Altklausur: KI generiert aus Unterlagen, orientiert am Altklausur-Aufbau falls vorhanden
+- Option: Nur die Altklausur auf Zeit durchmachen
+- Mit oder ohne Timer wählbar
+- Standard-Timer: 90 Minuten (anpassbar — siehe Konstante)
+
+---
+
+## Lernplan
+- Klausurtermin pro Fach eintragbar
+- Lernplan selbst erstellen mit verschiedenen Task-Typen:
+  - Datei mit Tutor durcharbeiten → automatisch abgehakt wenn in App erledigt
+  - Vokabeln eines Fachs durcharbeiten → automatisch abgehakt
+  - Klausur/Prüfungssimulation bearbeiten → automatisch abgehakt
+  - Eigene manuelle Tasks → manuell abhaken
+- Alle Tasks zeitlich planbar (Datum & Uhrzeit)
+- Automatische Verknüpfung mit Aktivitäten in der App
+
+---
+
+## Fortschritt & Motivation
+- Fortschrittsanzeige pro Fach gegliedert nach:
+  - Vokabeln: X von Y gelernt
+  - Unterlagen: X von Y durchgearbeitet
+- Streak-System:
+  - Streak bleibt am Leben durch jede Lernaktivität:
+    - 1 Slide durchgearbeitet
+    - 5 Vokabeln gelernt
+    - 1 Übung bearbeitet
+    - oder sonstige Aktivität in der App
+- Timetracking: Lernzeit pro Fach wird automatisch erfasst
+
+---
+
+## Push-Nachrichten (via Make)
+- Lernplan-Erinnerungen
+- Streak-Alarm (wenn man heute noch nichts gemacht hat)
+- Motivations-Nachrichten
+- Uhrzeit in Einstellungen konfigurierbar
+
+---
+
+## Onboarding
+- Interaktive Einführung geplant (KI führt durch die App, erstes Fach wird direkt eingerichtet)
+- Wird erst in Phase 4 umgesetzt — vorerst zurückstellen
+
+---
+
+## Feature-Reihenfolge (Umsetzung in Cursor)
+
+### Phase 1 — MVP (höchste Priorität)
+1. Projekt-Setup + Design-Grundgerüst (Farben, Schrift, Layout)
+2. Login / Registrierung mit Supabase
+3. API Key Einstellungen (BYOK)
+4. Dashboard — Fächer & Semester anlegen
+5. PDF Upload mit Kategorien + 20 MB Limit pro Nutzer
+6. KI-Tutor Basisfunktion (Vorlesungen)
+
+### Phase 2 — Kern-Features
+7. Slide-Erkennung & Themen-Clustering durch KI
+8. Tutor-Modus Layout (links Slides, rechts Chat)
+9. Recht & Mathe Sondermodi
+10. Vokabeln/Karteikarten auto-generiert nach Durcharbeiten
+11. Vokabeln-Formate & Format-Wechsel
+
+### Phase 3 — Motivation & Planung
+12. Fortschrittsanzeige pro Fach
+13. Streak-System
+14. Timetracking
+15. Lernplan mit Tasks & automatischer Verknüpfung
+16. Push-Nachrichten via Make
+
+### Phase 4 — Extra & Polish
+17. Prüfungs-Simulation
+18. Zusammenfassungen pro Fach
+19. Dark Mode
+20. Deutsch/Englisch Umschaltung
+21. Onboarding (interaktiv)
+
+---
+
+## Was ich NICHT will
+- Keine überkomplizierten Architekturen am Anfang
+- Keine kostenpflichtigen Services ohne Rückfrage
+- Nichts ohne Erklärung einfach überschreiben
+- Keine großen Umbauten ohne Absprache
+- Immer erst das aktuelle Feature fertigstellen bevor das nächste angefangen wird
