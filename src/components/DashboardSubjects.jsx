@@ -26,6 +26,7 @@ export default function DashboardSubjects({ user }) {
   const [group, setGroup] = useState('')
   const [examDate, setExamDate] = useState('')
   const [saving, setSaving] = useState(false)
+  const [showCreateForm, setShowCreateForm] = useState(false)
 
   useEffect(() => {
     let isMounted = true
@@ -108,64 +109,85 @@ export default function DashboardSubjects({ user }) {
   return (
     <div className="space-y-6">
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold text-studiio-ink">Deine Fächer</h2>
-        <p className="text-sm text-studiio-muted">
-          Lege hier deine Fächer an und ordne sie einem Semester oder einer eigenen Kategorie zu
-          (z.&nbsp;B. „3. Semester“, „Schwerpunkt Recht“, „Wirtschaft“). Pro Fach kannst du einen Klausurtermin
-          eintragen und siehst einen Countdown.
-        </p>
-        <form onSubmit={handleCreateSubject} className="mt-2 grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1.5fr)_auto] items-end">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <label htmlFor="subject-name" className="block text-sm font-medium text-studiio-ink mb-1">
-              Fachname
-            </label>
-            <input
-              id="subject-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              placeholder="z. B. BWL I, Strafrecht, Analysis"
-              className="studiio-input w-full"
-            />
-          </div>
-          <div>
-            <label htmlFor="subject-group" className="block text-sm font-medium text-studiio-ink mb-1">
-              Semester / Kategorie
-            </label>
-            <input
-              id="subject-group"
-              type="text"
-              value={group}
-              onChange={(e) => setGroup(e.target.value)}
-              placeholder="z. B. 3. Semester, Schwerpunkt Recht"
-              className="studiio-input w-full"
-            />
-          </div>
-          <div>
-            <label htmlFor="subject-exam-date" className="block text-sm font-medium text-studiio-ink mb-1">
-              Klausurtermin (optional)
-            </label>
-            <input
-              id="subject-exam-date"
-              type="date"
-              value={examDate}
-              onChange={(e) => setExamDate(e.target.value)}
-              className="studiio-input w-full"
-            />
+            <h2 className="text-xl font-semibold text-studiio-ink">Deine Fächer</h2>
+            <p className="text-sm text-studiio-muted">
+              Ordne deine Fächer Semestern oder eigenen Kategorien zu und behalte deine Klausurtermine im Blick.
+            </p>
           </div>
           <button
-            type="submit"
-            disabled={saving}
-            className="studiio-btn-primary whitespace-nowrap md:ml-2"
+            type="button"
+            onClick={() => setShowCreateForm((v) => !v)}
+            className="inline-flex items-center gap-2 rounded-full bg-studiio-accent text-white px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-studiio-accentHover"
           >
-            {saving ? 'Wird angelegt …' : 'Fach hinzufügen'}
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15 text-base leading-none">
+              +
+            </span>
+            <span className="hidden sm:inline">
+              Neues Fach
+            </span>
           </button>
-        </form>
-        {error && (
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-2">
-            {error}
-          </p>
+        </div>
+        {showCreateForm && (
+          <>
+            <form
+              onSubmit={handleCreateSubject}
+              className="mt-3 grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1.5fr)_auto] items-end"
+            >
+              <div>
+                <label htmlFor="subject-name" className="block text-sm font-medium text-studiio-ink mb-1">
+                  Fachname
+                </label>
+                <input
+                  id="subject-name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  placeholder="z. B. BWL I, Strafrecht, Analysis"
+                  className="studiio-input w-full"
+                />
+              </div>
+              <div>
+                <label htmlFor="subject-group" className="block text-sm font-medium text-studiio-ink mb-1">
+                  Semester / Kategorie
+                </label>
+                <input
+                  id="subject-group"
+                  type="text"
+                  value={group}
+                  onChange={(e) => setGroup(e.target.value)}
+                  placeholder="z. B. 3. Semester, Schwerpunkt Recht"
+                  className="studiio-input w-full"
+                />
+              </div>
+              <div>
+                <label htmlFor="subject-exam-date" className="block text-sm font-medium text-studiio-ink mb-1">
+                  Klausurtermin (optional)
+                </label>
+                <input
+                  id="subject-exam-date"
+                  type="date"
+                  value={examDate}
+                  onChange={(e) => setExamDate(e.target.value)}
+                  className="studiio-input w-full"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={saving}
+                className="studiio-btn-primary whitespace-nowrap md:ml-2"
+              >
+                {saving ? 'Wird angelegt …' : 'Fach hinzufügen'}
+              </button>
+            </form>
+            {error && (
+              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-2">
+                {error}
+              </p>
+            )}
+          </>
         )}
       </section>
 
