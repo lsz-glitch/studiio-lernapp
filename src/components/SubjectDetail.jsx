@@ -4,6 +4,7 @@ import LectureTutor from './LectureTutor'
 import FlashcardCreateModal from './FlashcardCreateModal'
 import FlashcardsSection from './FlashcardsSection'
 import FlashcardPracticePage from './FlashcardPracticePage'
+import SubjectProgress from './SubjectProgress'
 
 class SubjectDetailErrorBoundary extends React.Component {
   constructor(props) {
@@ -56,6 +57,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
   const [flashcardMaterial, setFlashcardMaterial] = useState(null)
   const [flashcardRefresh, setFlashcardRefresh] = useState(0)
   const [showFlashcardPractice, setShowFlashcardPractice] = useState(false)
+  const [showAddModal, setShowAddModal] = useState(false)
 
   // Direkt vom Dashboard „Vokabeln üben“ geöffnet?
   React.useEffect(() => {
@@ -116,6 +118,12 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         )}
       </section>
 
+      <SubjectProgress
+        user={user}
+        subject={subject}
+        refreshTrigger={flashcardRefresh}
+      />
+
       <SubjectMaterials
         user={user}
         subject={subject}
@@ -125,15 +133,23 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       />
 
       <section className="border-t border-studiio-lavender/40 pt-4">
-        <h3 className="text-lg font-semibold text-studiio-ink mb-2">Vokabeln / Karteikarten</h3>
-        <p className="text-sm text-studiio-muted mb-3">
-          Pro Fach ein eigenes Vokabel-System. Klicke auf „Vokabeln üben“, um Frage für Frage abgefragt zu werden.
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h3 className="text-lg font-semibold text-studiio-ink">Vokabeln / Karteikarten</h3>
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="rounded-lg border-2 border-dashed border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-ink hover:border-studiio-accent hover:bg-studiio-sky/20"
+          >
+            Karte hinzufügen
+          </button>
+        </div>
         <FlashcardsSection
           user={user}
           subject={subject}
           refreshTrigger={flashcardRefresh}
           onStartPractice={() => setShowFlashcardPractice(true)}
+          showAddModal={showAddModal}
+          onCloseAddModal={() => setShowAddModal(false)}
         />
       </section>
 

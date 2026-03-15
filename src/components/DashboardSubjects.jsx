@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import SubjectProgressMini from './SubjectProgressMini'
+
+function getCardStyle(pct) {
+  if (pct == null) {
+    return { backgroundColor: 'rgba(255,255,255,0.9)', borderColor: 'rgba(203, 198, 224, 0.6)' }
+  }
+  const hue = (pct / 100) * 120
+  return {
+    backgroundColor: `hsl(${hue}, 45%, 96%)`,
+    borderColor: `hsl(${hue}, 50%, 82%)`,
+  }
+}
 
 function formatCountdown(examDate) {
   if (!examDate) return 'Kein Termin eingetragen'
@@ -21,6 +33,7 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [progressBySubject, setProgressBySubject] = useState({})
 
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
@@ -319,12 +332,13 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                   ) : (
                     <article
                       key={subject.id}
-                      className="rounded-lg border-2 border-studiio-lavender/50 bg-white/90 px-5 py-5 min-h-[140px] flex flex-col gap-2 cursor-pointer hover:border-studiio-accent/70 hover:bg-studiio-sky/30 transition-colors"
+                      className="rounded-lg border-2 px-5 py-5 min-h-[140px] flex flex-col gap-2 cursor-pointer transition-colors hover:opacity-95"
+                      style={getCardStyle(progressBySubject[subject.id])}
                       onClick={() => onOpenSubject && onOpenSubject(subject)}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <h4 className="text-lg font-semibold text-studiio-ink">{subject.name}</h4>
-                        <span className="inline-flex items-center rounded px-2.5 py-1 text-sm font-medium text-studiio-ink bg-studiio-sky/60">
+                        <span className="inline-flex items-center rounded px-2.5 py-1 text-sm font-medium text-studiio-ink bg-white/80">
                           {formatCountdown(subject.exam_date)}
                         </span>
                       </div>
@@ -334,6 +348,11 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                           {new Date(subject.exam_date).toLocaleDateString('de-DE')}
                         </p>
                       )}
+                      <SubjectProgressMini
+                        user={user}
+                        subject={subject}
+                        onProgress={(id, pct) => setProgressBySubject((prev) => ({ ...prev, [id]: pct }))}
+                      />
                       <div className="flex justify-end pt-2 gap-2 flex-wrap mt-auto">
                         {onStartPractice && (
                           <button

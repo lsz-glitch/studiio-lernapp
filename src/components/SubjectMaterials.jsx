@@ -21,6 +21,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
   const [selectedFiles, setSelectedFiles] = useState([]) // [{file, category}]
   const [uploading, setUploading] = useState(false)
   const [showUploadForm, setShowUploadForm] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
   const [totalBytes, setTotalBytes] = useState(0)
 
@@ -100,30 +101,49 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     return Array.from(groups.entries())
   }, [materials])
 
-  function handleFileChange(event) {
-    const files = Array.from(event.target.files || [])
-    if (!files.length) {
-      setSelectedFiles([])
-      return
-    }
-
-    const invalid = files.find(
+  function addFiles(files, replace = false) {
+    const list = Array.from(files || []).filter((f) => f && f instanceof File)
+    if (!list.length) return
+    const invalid = list.find(
       (f) => f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf'),
     )
     if (invalid) {
       setError('Es sind aktuell nur PDF-Dateien erlaubt.')
-      setSelectedFiles([])
       return
     }
-
     setError('')
     setInfo('')
-    setSelectedFiles(
-      files.map((f) => ({
-        file: f,
-        category: CATEGORY_OPTIONS[0],
-      })),
-    )
+    const newEntries = list.map((f) => ({ file: f, category: CATEGORY_OPTIONS[0] }))
+    setSelectedFiles((prev) => (replace ? newEntries : [...prev, ...newEntries]))
+  }
+
+  function handleFileChange(event) {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+    addFiles(files, true)
+    event.target.value = ''
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    const files = e.dataTransfer?.files
+    if (!files?.length) return
+    setShowUploadForm(true)
+    addFiles(files)
   }
 
   function handleSelectedCategoryChange(index, value) {
@@ -209,9 +229,21 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     <div className="mt-3 space-y-3 rounded-2xl border border-studiio-lavender/50 bg-studiio-sky/20 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h5 className="text-sm font-semibold text-studiio-ink">Dateien für dieses Fach</h5>
-        <p className="text-xs text-studiio-muted">
-          Speicher: {usedMb} / {maxMb} MB
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {showUploadForm && (
+            <p className="text-xs text-studiio-muted">
+              Speicher: {usedMb} / {maxMb} MB
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowUploadForm((v) => !v)}
+            className="inline-flex items-center gap-2 rounded-full bg-studiio-accent text-white px-3 py-1.5 text-xs font-medium hover:bg-studiio-accentHover"
+          >
+            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/15 text-sm leading-none">+</span>
+            {showUploadForm ? 'Upload ausblenden' : 'Dateien hochladen'}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -225,22 +257,19 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         </p>
       )}
 
-      <button
-        type="button"
-        onClick={() => setShowUploadForm((v) => !v)}
-        className="inline-flex items-center gap-2 rounded-full bg-studiio-accent text-white px-3 py-1.5 text-xs font-medium hover:bg-studiio-accentHover"
-      >
-        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/15 text-sm leading-none">
-          +
-        </span>
-        {showUploadForm ? 'Upload ausblenden' : 'Dateien hochladen'}
-      </button>
-
       {showUploadForm && (
-        <form onSubmit={handleUpload} className="space-y-3 rounded-xl bg-white/70 px-3 py-3">
+        <form
+          onSubmit={handleUpload}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`space-y-3 rounded-xl border-2 border-dashed px-3 py-4 transition-colors ${
+            isDragging ? 'border-studiio-accent bg-studiio-sky/40' : 'border-studiio-lavender/50 bg-white/70'
+          }`}
+        >
           <div>
             <label className="block text-xs font-medium text-studiio-ink mb-1">
-              PDF-Dateien auswählen (mehrere möglich)
+              {isDragging ? 'Dateien hier ablegen …' : 'PDF-Dateien auswählen oder hierher ziehen (mehrere möglich)'}
             </label>
             <input
               type="file"

@@ -4,12 +4,11 @@ import { FORMAT_LABELS } from './FlashcardCreateModal'
 import FlashcardAddManualModal from './FlashcardAddManualModal'
 import FlashcardEditModal from './FlashcardEditModal'
 
-export default function FlashcardsSection({ user, subject, refreshTrigger, onStartPractice }) {
+export default function FlashcardsSection({ user, subject, refreshTrigger, onStartPractice, showAddModal = false, onCloseAddModal }) {
   const [cards, setCards] = useState([])
   const [toPracticeCount, setToPracticeCount] = useState(null) // null = noch nicht geladen
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [showAddModal, setShowAddModal] = useState(false)
   const [addModalRefresh, setAddModalRefresh] = useState(0)
   const [showManageList, setShowManageList] = useState(false)
   const [editingCard, setEditingCard] = useState(null)
@@ -77,27 +76,17 @@ export default function FlashcardsSection({ user, subject, refreshTrigger, onSta
 
   if (cards.length === 0) {
     return (
-      <div className="space-y-2">
-        <p className="text-sm text-studiio-muted">
-          Noch keine Vokabeln für dieses Fach. Erstelle welche über „Vokabeln erstellen“ bei einer Datei – oder füge direkt eine Karte hinzu.
-        </p>
-        <button
-          type="button"
-          onClick={() => setShowAddModal(true)}
-          className="rounded-lg border-2 border-dashed border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-ink hover:border-studiio-accent hover:bg-studiio-sky/20"
-        >
-          Karte hinzufügen
-        </button>
+      <>
         {showAddModal && (
           <FlashcardAddManualModal
             user={user}
             subject={subject}
             currentCardCount={0}
-            onClose={() => setShowAddModal(false)}
-            onSuccess={() => setAddModalRefresh((n) => n + 1)}
+            onClose={onCloseAddModal}
+            onSuccess={() => { setAddModalRefresh((n) => n + 1); onCloseAddModal?.() }}
           />
         )}
-      </div>
+      </>
     )
   }
 
@@ -193,8 +182,8 @@ export default function FlashcardsSection({ user, subject, refreshTrigger, onSta
           user={user}
           subject={subject}
           currentCardCount={cards.length}
-          onClose={() => setShowAddModal(false)}
-          onSuccess={() => setAddModalRefresh((n) => n + 1)}
+          onClose={onCloseAddModal}
+          onSuccess={() => { setAddModalRefresh((n) => n + 1); onCloseAddModal?.() }}
         />
       )}
       {editingCard && (
