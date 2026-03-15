@@ -1,10 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import SubjectMaterials from './SubjectMaterials'
 import LectureTutor from './LectureTutor'
 import FlashcardCreateModal from './FlashcardCreateModal'
 import FlashcardsSection from './FlashcardsSection'
 import FlashcardPracticePage from './FlashcardPracticePage'
 import SubjectProgress from './SubjectProgress'
+import { getLearningTime, formatLearningTime } from '../utils/learningTime'
 
 class SubjectDetailErrorBoundary extends React.Component {
   constructor(props) {
@@ -58,6 +59,20 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
   const [flashcardRefresh, setFlashcardRefresh] = useState(0)
   const [showFlashcardPractice, setShowFlashcardPractice] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [learningTimeSeconds, setLearningTimeSeconds] = useState(0)
+  const [learningTimeRefresh, setLearningTimeRefresh] = useState(0)
+
+  useEffect(() => {
+    if (!user?.id || !subject?.id) return
+    getLearningTime(user.id, subject.id).then(setLearningTimeSeconds)
+    // Nach Rückkehr aus Tutor/Vokabeln: nochmal laden, sobald die gespeicherte Zeit ankommen konnte
+    if (learningTimeRefresh > 0) {
+      const t = setTimeout(() => {
+        getLearningTime(user.id, subject.id).then(setLearningTimeSeconds)
+      }, 1500)
+      return () => clearTimeout(t)
+    }
+  }, [user?.id, subject?.id, learningTimeRefresh])
 
   // Direkt vom Dashboard „Vokabeln üben“ geöffnet?
   React.useEffect(() => {
@@ -73,7 +88,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         user={user}
         subject={subject}
         material={activeLecture}
-        onBack={() => setActiveLecture(null)}
+        onBack={() => { setActiveLecture(null); setLearningTimeRefresh((r) => r + 1) }}
       />
     )
   }
@@ -83,7 +98,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       <FlashcardPracticePage
         user={user}
         subject={subject}
-        onBack={() => { setShowFlashcardPractice(false); setFlashcardRefresh((r) => r + 1) }}
+        onBack={() => { setShowFlashcardPractice(false); setFlashcardRefresh((r) => r + 1); setLearningTimeRefresh((r) => r + 1) }}
       />
     )
   }
@@ -116,6 +131,9 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
             {new Date(subject.exam_date).toLocaleDateString('de-DE')}
           </p>
         )}
+        <p className="text-sm text-studiio-ink">
+          Bisher <span className="font-medium">{formatLearningTime(learningTimeSeconds)}</span> gelernt
+        </p>
       </section>
 
       <SubjectProgress

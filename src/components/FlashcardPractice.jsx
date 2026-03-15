@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { API_BASE } from '../config'
+import { recordStreakActivity } from '../utils/streak'
 
 const apiBase = import.meta.env.DEV ? '' : API_BASE
 
@@ -49,6 +50,8 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
       .from('flashcards')
       .update({ interval_days, next_review_at })
       .eq('id', flashcardId)
+    // Streak: Jede Vokabel zählt als Lernaktivität (nur 1× pro Tag wird gezählt)
+    recordStreakActivity(user.id)
   }
 
   async function evaluateOpenAnswer() {
@@ -208,6 +211,10 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
               </>
             ) : (
               <>
+                <div className="rounded-lg bg-studiio-lavender/20 border border-studiio-lavender/50 p-3">
+                  <p className="text-xs text-studiio-muted mb-1">Deine Antwort:</p>
+                  <p className="text-sm text-studiio-ink whitespace-pre-wrap">{openAnswer}</p>
+                </div>
                 <div
                   className={`rounded-lg border-2 p-4 ${
                     evaluation.correct ? 'border-green-500 bg-green-50 text-green-800' : 'border-red-400 bg-red-50 text-red-800'

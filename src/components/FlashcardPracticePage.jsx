@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import FlashcardPractice from './FlashcardPractice'
 import FlashcardEditModal from './FlashcardEditModal'
+import { addLearningTime } from '../utils/learningTime'
 
 export default function FlashcardPracticePage({ user, subject, onBack }) {
   const [cards, setCards] = useState([])
@@ -9,6 +10,25 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
   const [error, setError] = useState('')
   const [editingCard, setEditingCard] = useState(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const sessionStartRef = useRef(Date.now())
+  const savedSecondsRef = useRef(0)
+
+  // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
+  useEffect(() => {
+    if (!user?.id || !subject?.id) return
+    const interval = setInterval(async () => {
+      savedSecondsRef.current += 60
+      await addLearningTime(user.id, subject.id, 60)
+    }, 60 * 1000)
+    return () => clearInterval(interval)
+  }, [user?.id, subject?.id])
+
+  async function handleBack() {
+    const totalSec = (Date.now() - sessionStartRef.current) / 1000
+    const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
+    if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
+    onBack()
+  }
 
   useEffect(() => {
     if (!subject?.id || !user?.id) return
@@ -50,7 +70,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
       <div className="flex-shrink-0 px-4 py-3 border-b border-studiio-lavender/40 bg-white/95">
         <button
           type="button"
-          onClick={onBack}
+          onClick={handleBack}
           className="inline-flex items-center gap-1 text-sm text-studiio-accent hover:underline font-medium"
         >
           <span className="inline-block rotate-180 text-base">➜</span>
@@ -69,7 +89,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
         {!loading && !error && cards.length === 0 && (
           <div className="rounded-xl border border-studiio-lavender/60 bg-white p-6 text-center">
             <p className="text-studiio-muted">Noch keine Vokabeln für dieses Fach.</p>
-            <button type="button" onClick={onBack} className="mt-3 text-sm text-studiio-accent hover:underline">
+            <button type="button" onClick={handleBack} className="mt-3 text-sm text-studiio-accent hover:underline">
               Zurück zum Fach
             </button>
           </div>
@@ -78,7 +98,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
           <FlashcardPractice
             user={user}
             cards={cards}
-            onBack={onBack}
+            onBack={handleBack}
             onEditCard={(card) => setEditingCard(card)}
           />
         )}

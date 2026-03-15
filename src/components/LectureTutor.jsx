@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import ReactMarkdown from 'react-markdown'
+import { recordStreakActivity } from '../utils/streak'
+import { addLearningTime } from '../utils/learningTime'
 
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
@@ -57,6 +59,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const [materialIndex, setMaterialIndex] = useState(1)
   const [totalMaterials, setTotalMaterials] = useState(0)
   const [pdfZoom, setPdfZoom] = useState(1)
+  const sessionStartRef = useRef(Date.now())
+  const savedSecondsRef = useRef(0)
+
+  // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
+  useEffect(() => {
+    if (!user?.id || !subject?.id) return
+    const interval = setInterval(async () => {
+      savedSecondsRef.current += 60
+      await addLearningTime(user.id, subject.id, 60)
+    }, 60 * 1000)
+    return () => clearInterval(interval)
+  }, [user?.id, subject?.id])
 
   // Materialliste laden, um Fortschritt „Datei X von Y“ zu berechnen
   useEffect(() => {
@@ -398,6 +412,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     ])
     setTopicIndex((idx) => idx + 1)
     sendToClaude({ userMessage: '', mode: 'explain' })
+    recordStreakActivity(user?.id)
   }
 
   // Erst starten, wenn der Tutor den PDF-Inhalt lesen kann (extrahierter Text da)
@@ -425,7 +440,12 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-2 py-3">
         <button
           type="button"
-          onClick={onBack}
+          onClick={async () => {
+            const totalSec = (Date.now() - sessionStartRef.current) / 1000
+            const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
+            if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
+            onBack()
+          }}
           className="inline-flex items-center gap-1 text-sm text-studiio-accent hover:underline font-medium"
         >
           <span className="inline-block rotate-180 text-base">➜</span>

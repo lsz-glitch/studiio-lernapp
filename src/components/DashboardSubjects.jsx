@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import SubjectProgressMini from './SubjectProgressMini'
+import { getStreak } from '../utils/streak'
 
 function getCardStyle(pct) {
   if (pct == null) {
@@ -34,6 +35,7 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [progressBySubject, setProgressBySubject] = useState({})
+  const [streak, setStreak] = useState({ current_streak_days: 0, last_activity_date: null })
 
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
@@ -175,6 +177,25 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-center sm:justify-start">
+        {streak.current_streak_days > 0 ? (
+          <div className="inline-flex items-center gap-2 rounded-2xl border-2 border-amber-300 bg-amber-50/90 px-5 py-3 shadow-sm">
+            <span className="text-2xl" aria-hidden>🔥</span>
+            <div>
+              <p className="text-sm font-semibold text-amber-800">
+                {streak.current_streak_days} {streak.current_streak_days === 1 ? 'Tag' : 'Tage'} Streak
+              </p>
+              <p className="text-xs text-amber-700/90">
+                Weiter so – tägliche Lernaktivität hält deinen Streak am Leben.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-studiio-muted">
+            🔥 Noch kein Streak – mach heute eine Lernaktivität (z. B. 1 Slide, 5 Vokabeln oder 1 Übung).
+          </p>
+        )}
+      </div>
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
