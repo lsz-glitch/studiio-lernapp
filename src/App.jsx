@@ -25,6 +25,73 @@ function App() {
     return () => subscription.unsubscribe()
   }, [])
 
+  // Letzte Ansicht/Fach nach Login wiederherstellen
+  useEffect(() => {
+    if (!user || authLoading) return
+
+    const restore = async () => {
+      try {
+        const storedView = localStorage.getItem('studiio_last_view')
+        const storedSubjectId = localStorage.getItem('studiio_last_subject_id')
+        const storedSubjectRaw = localStorage.getItem('studiio_last_subject')
+        let restoredSubject = null
+
+        if (storedView === 'settings') {
+          setActiveView('settings')
+        } else {
+          setActiveView('overview')
+        }
+
+        // 1. Versuch: komplettes Fach-Objekt aus localStorage verwenden
+        if (storedSubjectRaw) {
+          try {
+            restoredSubject = JSON.parse(storedSubjectRaw)
+            if (restoredSubject && restoredSubject.id) {
+              setSelectedSubject(restoredSubject)
+              return
+            }
+          } catch (e) {
+            console.error('Fehler beim Parsen von studiio_last_subject:', e)
+          }
+        }
+
+        // 2. Fallback: Fach aus Supabase nachladen, falls nur die ID gespeichert ist
+        if (!restoredSubject && storedSubjectId) {
+          const { data, error } = await supabase
+            .from('subjects')
+            .select('id, name, group_label, exam_date')
+            .eq('id', storedSubjectId)
+            .maybeSingle()
+
+          if (!error && data) {
+            setSelectedSubject(data)
+          }
+        }
+      } catch (e) {
+        console.error('Fehler beim Wiederherstellen der letzten Ansicht:', e)
+      }
+    }
+
+    restore()
+  }, [user, authLoading])
+
+  // Ansicht/Fach in localStorage speichern
+  useEffect(() => {
+    if (!user) return
+    try {
+      localStorage.setItem('studiio_last_view', activeView)
+      if (selectedSubject?.id) {
+        localStorage.setItem('studiio_last_subject_id', selectedSubject.id)
+        localStorage.setItem('studiio_last_subject', JSON.stringify(selectedSubject))
+      } else {
+        localStorage.removeItem('studiio_last_subject_id')
+        localStorage.removeItem('studiio_last_subject')
+      }
+    } catch (e) {
+      console.error('Fehler beim Speichern der letzten Ansicht:', e)
+    }
+  }, [user, activeView, selectedSubject])
+
   async function handleLogout() {
     await supabase.auth.signOut()
   }
