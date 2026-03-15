@@ -1,14 +1,20 @@
 import { createClient } from '@supabase/supabase-js'
+import {
+  FALLBACK_SUPABASE_URL,
+  FALLBACK_SUPABASE_ANON_KEY,
+} from './config'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const supabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL || FALLBACK_SUPABASE_URL
+const supabaseAnonKey =
+  import.meta.env.VITE_SUPABASE_ANON_KEY || FALLBACK_SUPABASE_ANON_KEY
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  // Hinweis in der Konsole, falls die Env-Variablen fehlen
-  console.warn(
-    'Supabase ist nicht konfiguriert. Bitte VITE_SUPABASE_URL und VITE_SUPABASE_ANON_KEY in .env.local setzen.',
-  )
-}
+export const isSupabaseConfigured = Boolean(
+  supabaseUrl &&
+    supabaseAnonKey &&
+    String(supabaseUrl).startsWith('http'),
+)
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
+export const supabase = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null

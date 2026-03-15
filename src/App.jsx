@@ -17,6 +17,10 @@ function App() {
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false)
+      return
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
       setAuthLoading(false)
@@ -95,7 +99,20 @@ function App() {
   }, [user, activeView, selectedSubject])
 
   async function handleLogout() {
-    await supabase.auth.signOut()
+    if (supabase) await supabase.auth.signOut()
+  }
+
+  if (!supabase) {
+    return (
+      <div className="min-h-screen bg-amber-50 text-gray-900 flex flex-col items-center justify-center px-6 py-12">
+        <h1 className="text-2xl font-semibold mb-2">Studiio — Supabase fehlt</h1>
+        <p className="text-center max-w-lg text-gray-700">
+          In <code className="bg-white px-1 rounded border">src/config.js</code>{' '}
+          <strong>FALLBACK_SUPABASE_URL</strong> und{' '}
+          <strong>FALLBACK_SUPABASE_ANON_KEY</strong> setzen (Supabase → API).
+        </p>
+      </div>
+    )
   }
 
   if (authLoading) {
