@@ -1,7 +1,13 @@
 /**
  * Studiio — zentrale Konstanten (laut .cursorrules)
  * Hier kannst du Werte einfach anpassen.
+ *
+ * Optional: FALLBACK_* wenn du ohne VITE_* buildest (z. B. Vercel ohne Env).
+ * Sonst reichen VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY in Root-.env
  */
+
+export const FALLBACK_SUPABASE_URL = ''
+export const FALLBACK_SUPABASE_ANON_KEY = ''
 
 export const MAX_STORAGE_PER_USER_MB = 20
 export const DEFAULT_EXAM_TIMER_MINUTES = 90

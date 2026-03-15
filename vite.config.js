@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
-// .env liegt im Projektroot (neben dieser Datei), nicht in frontend/ — sonst lädt Vite sie nicht
+// .env im Projektroot laden (envDir), sonst keine VITE_* in frontend/ → Supabase leer / weißer Bildschirm
 const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
