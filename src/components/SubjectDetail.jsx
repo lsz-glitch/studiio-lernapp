@@ -51,11 +51,19 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-function SubjectDetailInner({ user, subject, onBack }) {
+function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPracticeHandled }) {
   const [activeLecture, setActiveLecture] = useState(null)
   const [flashcardMaterial, setFlashcardMaterial] = useState(null)
   const [flashcardRefresh, setFlashcardRefresh] = useState(0)
   const [showFlashcardPractice, setShowFlashcardPractice] = useState(false)
+
+  // Direkt vom Dashboard „Vokabeln üben“ geöffnet?
+  React.useEffect(() => {
+    if (openToPractice && subject?.id) {
+      setShowFlashcardPractice(true)
+      onOpenToPracticeHandled?.()
+    }
+  }, [openToPractice, subject?.id])
 
   if (activeLecture) {
     return (
@@ -73,7 +81,7 @@ function SubjectDetailInner({ user, subject, onBack }) {
       <FlashcardPracticePage
         user={user}
         subject={subject}
-        onBack={() => setShowFlashcardPractice(false)}
+        onBack={() => { setShowFlashcardPractice(false); setFlashcardRefresh((r) => r + 1) }}
       />
     )
   }
@@ -111,6 +119,7 @@ function SubjectDetailInner({ user, subject, onBack }) {
       <SubjectMaterials
         user={user}
         subject={subject}
+        refreshTrigger={flashcardRefresh}
         onOpenLecture={(material) => setActiveLecture(material)}
         onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
       />

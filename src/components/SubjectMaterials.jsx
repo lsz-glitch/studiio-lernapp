@@ -11,8 +11,9 @@ const CATEGORY_OPTIONS = [
   'Zusatzmaterialien',
 ]
 
-export default function SubjectMaterials({ user, subject, onOpenLecture, onOpenFlashcardCreate }) {
+export default function SubjectMaterials({ user, subject, refreshTrigger, onOpenLecture, onOpenFlashcardCreate }) {
   const [materials, setMaterials] = useState([])
+  const [materialIdsWithGeneratedCards, setMaterialIdsWithGeneratedCards] = useState(new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
@@ -67,6 +68,24 @@ export default function SubjectMaterials({ user, subject, onOpenLecture, onOpenF
       isMounted = false
     }
   }, [user.id, subject.id])
+
+  // Pro Datei nur einmal KI-Vokabeln: welche Materialien haben bereits Karten?
+  useEffect(() => {
+    if (!subject?.id || !user?.id) return
+    let mounted = true
+    supabase
+      .from('flashcards')
+      .select('material_id')
+      .eq('subject_id', subject.id)
+      .eq('user_id', user.id)
+      .not('material_id', 'is', null)
+      .then(({ data }) => {
+        if (!mounted) return
+        const ids = new Set((data || []).map((r) => r.material_id).filter(Boolean))
+        setMaterialIdsWithGeneratedCards(ids)
+      })
+    return () => { mounted = false }
+  }, [user.id, subject.id, refreshTrigger])
 
   const usedMb = (totalBytes / (1024 * 1024)).toFixed(1)
   const maxMb = (MAX_STORAGE_PER_USER_BYTES / (1024 * 1024)).toFixed(0)
@@ -314,13 +333,19 @@ export default function SubjectMaterials({ user, subject, onOpenLecture, onOpenF
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         {onOpenFlashcardCreate && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenFlashcardCreate(m)}
-                            className="text-[11px] font-medium text-studiio-muted hover:text-studiio-accent"
-                          >
-                            Vokabeln erstellen
-                          </button>
+                          materialIdsWithGeneratedCards.has(m.id) ? (
+                            <span className="text-[11px] text-studiio-muted" title="Bereits erstellt – Karten manuell hinzufügen möglich">
+                              Vokabeln erstellt
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFlashcardCreate(m)}
+                              className="text-[11px] font-medium text-studiio-muted hover:text-studiio-accent"
+                            >
+                              Vokabeln erstellen
+                            </button>
+                          )
                         )}
                         {m.category === 'Vorlesung' && onOpenLecture && (
                           <button

@@ -13,6 +13,7 @@ function App() {
   const [authMode, setAuthMode] = useState('login') // 'login' | 'register'
   const [activeView, setActiveView] = useState('overview') // 'overview' | 'settings'
   const [selectedSubject, setSelectedSubject] = useState(null)
+  const [openToPractice, setOpenToPractice] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -184,11 +185,17 @@ function App() {
               user={user}
               subject={selectedSubject}
               onBack={() => setSelectedSubject(null)}
+              openToPractice={openToPractice}
+              onOpenToPracticeHandled={() => setOpenToPractice(false)}
             />
           ) : (
             <DashboardSubjects
               user={user}
               onOpenSubject={(subject) => setSelectedSubject(subject)}
+              onStartPractice={(subject) => {
+                setSelectedSubject(subject)
+                setOpenToPractice(true)
+              }}
             />
           )
         )}

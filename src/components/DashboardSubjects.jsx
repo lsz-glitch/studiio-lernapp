@@ -17,7 +17,7 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-export default function DashboardSubjects({ user, onOpenSubject }) {
+export default function DashboardSubjects({ user, onOpenSubject, onStartPractice }) {
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -261,7 +261,7 @@ export default function DashboardSubjects({ user, onOpenSubject }) {
                     <form
                       key={subject.id}
                       onSubmit={handleUpdateSubject}
-                      className="rounded-2xl border border-studiio-lavender/70 bg-white px-4 py-3 flex flex-col gap-2"
+                      className="rounded-lg border-2 border-studiio-lavender/70 bg-white px-5 py-5 min-h-[140px] flex flex-col gap-3"
                     >
                       <div>
                         <label className="block text-xs font-medium text-studiio-ink mb-1">
@@ -319,29 +319,41 @@ export default function DashboardSubjects({ user, onOpenSubject }) {
                   ) : (
                     <article
                       key={subject.id}
-                      className="rounded-2xl border border-studiio-lavender/50 bg-white/80 px-4 py-3 flex flex-col gap-1 cursor-pointer hover:border-studiio-accent/70 hover:bg-studiio-sky/30 transition-colors"
+                      className="rounded-lg border-2 border-studiio-lavender/50 bg-white/90 px-5 py-5 min-h-[140px] flex flex-col gap-2 cursor-pointer hover:border-studiio-accent/70 hover:bg-studiio-sky/30 transition-colors"
                       onClick={() => onOpenSubject && onOpenSubject(subject)}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <h4 className="font-medium text-studiio-ink">{subject.name}</h4>
-                        <span className="inline-flex items-center rounded-full bg-studiio-sky/60 px-2.5 py-0.5 text-xs font-medium text-studiio-ink">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="text-lg font-semibold text-studiio-ink">{subject.name}</h4>
+                        <span className="inline-flex items-center rounded px-2.5 py-1 text-sm font-medium text-studiio-ink bg-studiio-sky/60">
                           {formatCountdown(subject.exam_date)}
                         </span>
                       </div>
                       {subject.exam_date && (
-                        <p className="text-xs text-studiio-muted">
+                        <p className="text-sm text-studiio-muted">
                           Klausurtermin:&nbsp;
                           {new Date(subject.exam_date).toLocaleDateString('de-DE')}
                         </p>
                       )}
-                      <div className="flex justify-end pt-1 gap-2">
+                      <div className="flex justify-end pt-2 gap-2 flex-wrap mt-auto">
+                        {onStartPractice && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onStartPractice(subject)
+                            }}
+                            className="rounded-lg bg-studiio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studiio-accentHover"
+                          >
+                            Vokabeln üben
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation()
                             startEdit(subject)
                           }}
-                          className="text-xs font-medium text-studiio-accent hover:underline"
+                          className="rounded-lg border border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-accent hover:bg-studiio-sky/20"
                         >
                           Bearbeiten
                         </button>

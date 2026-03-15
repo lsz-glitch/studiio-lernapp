@@ -346,6 +346,92 @@ app.post('/api/evaluate-answer', async (req, res) => {
   }
 })
 
+// KI-Vorschlag für Multiple-Choice-Optionen (inkl. richtige Antwort + plausible Falsche)
+// Gibt bei Claude-Fehler trotzdem 200 mit Fallback-Optionen zurück, damit der Nutzer nie "fehlgeschlagen" sieht.
+function fallbackMcqOptions(correctAnswer) {
+  const a = String(correctAnswer || '').trim()
+  return [a || 'Richtige Antwort', 'Weitere Option 1', 'Weitere Option 2', 'Weitere Option 3'].filter(Boolean)
+}
+
+app.post('/api/suggest-mcq-options', async (req, res) => {
+  let correctAnswer = ''
+  try {
+    const body = req.body || {}
+    const { apiKey, question, existingOptions } = body
+    correctAnswer = body.correctAnswer != null ? String(body.correctAnswer) : ''
+    if (!apiKey || !question || body.correctAnswer == null) {
+      return res.status(400).json({ error: 'apiKey, question und correctAnswer sind erforderlich.', options: fallbackMcqOptions(correctAnswer) })
+    }
+    const existing = Array.isArray(existingOptions) ? existingOptions.filter((s) => typeof s === 'string' && s.trim()) : []
+    const system = 'Du erzeugst Antwortmöglichkeiten für eine Multiple-Choice-Frage. Antworte NUR mit einem JSON-Objekt: {"options": ["Option1", "Option2", "Option3", "Option4"]}. Die richtige Antwort muss genau einmal vorkommen. Die anderen Optionen sollen plausibel falsch sein. Reihenfolge zufällig mischen. Alle Optionen auf Deutsch, kurz und klar.'
+    let userContent = `Frage: ${question}\nRichtige Antwort: ${correctAnswer}\n\n`
+    if (existing.length > 0) {
+      userContent += `Bereits vorhandene Optionen (berücksichtigen):\n${existing.map((o) => `- ${o}`).join('\n')}\n\n`
+    }
+    userContent += `Erzeuge 4 Antwortmöglichkeiten als JSON-Array "options". Die richtige Antwort "${correctAnswer}" muss enthalten sein. Nur das JSON ausgeben.`
+    const payload = {
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 300,
+      system,
+      messages: [{ role: 'user', content: userContent }],
+    }
+    const bodyStr = JSON.stringify(payload)
+    const rawBody = await new Promise((resolve, reject) => {
+      const clientReq = https.request(
+        'https://api.anthropic.com/v1/messages',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Length': Buffer.byteLength(bodyStr, 'utf8'),
+          },
+        },
+        (resp) => {
+          const chunks = []
+          resp.on('data', (chunk) => chunks.push(chunk))
+          resp.on('end', () => resolve({ status: resp.statusCode, data: Buffer.concat(chunks).toString('utf8') }))
+          resp.on('error', reject)
+        },
+      )
+      clientReq.on('error', (e) => {
+        console.error('[claudeProxy] suggest-mcq-options request error:', e.message)
+        reject(e)
+      })
+      clientReq.write(bodyStr, 'utf8')
+      clientReq.end()
+    })
+    let data = {}
+    try {
+      data = rawBody.data ? JSON.parse(rawBody.data) : {}
+    } catch (_) {}
+    if (rawBody.status < 200 || rawBody.status >= 300) {
+      const errMsg = data?.error?.message || data?.error || (typeof data?.message === 'string' ? data.message : null)
+      console.error('[claudeProxy] suggest-mcq-options Claude error:', rawBody.status, errMsg || rawBody.data)
+      return res.status(200).json({ options: fallbackMcqOptions(correctAnswer) })
+    }
+    const firstBlock = data?.content?.[0]
+    const text = (typeof firstBlock?.text === 'string' ? firstBlock.text : '') || String(rawBody.data || '').trim()
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    let options = []
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0])
+        const arr = parsed?.options
+        if (Array.isArray(arr)) options = arr.filter((s) => typeof s === 'string').map((s) => String(s).trim()).filter(Boolean)
+      } catch (_) {}
+    }
+    if (options.length < 2) {
+      options = fallbackMcqOptions(correctAnswer)
+    }
+    return res.status(200).json({ options })
+  } catch (err) {
+    console.error('[claudeProxy] suggest-mcq-options:', err.message || err)
+    return res.status(200).json({ options: fallbackMcqOptions(correctAnswer) })
+  }
+})
+
 // 404 am Ende: zeigt an, welche URL angefragt wurde (zum Debuggen)
 app.use((req, res) => {
   res.status(404).json({

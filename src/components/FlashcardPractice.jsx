@@ -5,7 +5,23 @@ import { API_BASE } from '../config'
 
 const apiBase = import.meta.env.DEV ? '' : API_BASE
 
-export default function FlashcardPractice({ user, cards, onBack }) {
+// Anki-ähnlich: Intervall-Stufen in Tagen (falsch → 0, richtig → 1, 3, 7, 14, 30)
+const INTERVAL_STEPS = [0, 1, 3, 7, 14, 30]
+
+function nextInterval(currentIntervalDays, correct) {
+  if (!correct) return { interval_days: 0, next_review_at: null }
+  const cur = currentIntervalDays ?? 0
+  let idx = 0
+  for (let i = 0; i < INTERVAL_STEPS.length; i++) {
+    if (INTERVAL_STEPS[i] <= cur) idx = i
+  }
+  const nextStep = INTERVAL_STEPS[Math.min(idx + 1, INTERVAL_STEPS.length - 1)]
+  const next = new Date()
+  next.setDate(next.getDate() + nextStep)
+  return { interval_days: nextStep, next_review_at: next.toISOString() }
+}
+
+export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
   const [index, setIndex] = useState(0)
   const [showAnswer, setShowAnswer] = useState(false)
   const [selectedOption, setSelectedOption] = useState(null)
@@ -21,13 +37,18 @@ export default function FlashcardPractice({ user, cards, onBack }) {
   const isLast = index === cards.length - 1
   const total = cards.length
 
-  async function saveReview(flashcardId, correct) {
+  async function saveReview(flashcardId, correct, currentIntervalDays = 0) {
     if (!user?.id) return
     await supabase.from('flashcard_reviews').insert({
       user_id: user.id,
       flashcard_id: flashcardId,
       correct,
     })
+    const { interval_days, next_review_at } = nextInterval(currentIntervalDays, correct)
+    await supabase
+      .from('flashcards')
+      .update({ interval_days, next_review_at })
+      .eq('id', flashcardId)
   }
 
   async function evaluateOpenAnswer() {
@@ -59,7 +80,7 @@ export default function FlashcardPractice({ user, cards, onBack }) {
       const result = await res.json().catch(() => ({}))
       const correct = !!result.correct
       setEvaluation({ correct, feedback: result.feedback || (correct ? 'Richtig.' : 'Leider nicht ganz.') })
-      await saveReview(card.id, correct)
+      await saveReview(card.id, correct, card.interval_days ?? 0)
     } catch (e) {
       setEvaluation({ correct: false, feedback: 'Bewertung fehlgeschlagen. ' + (e.message || '') })
     } finally {
@@ -92,9 +113,10 @@ export default function FlashcardPractice({ user, cards, onBack }) {
     setShowAnswer(true)
   }
 
-  function handleDefinitionSelfRate(correct) {
+  async function handleDefinitionSelfRate(correct) {
     setDefinitionCorrect(correct)
-    saveReview(card.id, correct)
+    await saveReview(card.id, correct, card.interval_days ?? 0)
+    handleNext()
   }
 
   if (!card) {
@@ -139,12 +161,23 @@ export default function FlashcardPractice({ user, cards, onBack }) {
 
   return (
     <div className="rounded-xl border border-studiio-lavender/60 bg-white overflow-hidden">
-      <div className="px-4 py-2 border-b border-studiio-lavender/40 bg-studiio-sky/20 text-sm text-studiio-muted">
-        Karte {index + 1} von {total}
-        {card.format && (
-          <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-studiio-lavender/40">
-            {FORMAT_LABELS[card.format] || card.format}
-          </span>
+      <div className="px-4 py-2 border-b border-studiio-lavender/40 bg-studiio-sky/20 text-sm text-studiio-muted flex items-center justify-between gap-2">
+        <span>
+          Karte {index + 1} von {total}
+          {card.format && (
+            <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-studiio-lavender/40">
+              {FORMAT_LABELS[card.format] || card.format}
+            </span>
+          )}
+        </span>
+        {onEditCard && (
+          <button
+            type="button"
+            onClick={() => onEditCard(card)}
+            className="text-xs font-medium text-studiio-accent hover:underline"
+          >
+            Bearbeiten
+          </button>
         )}
       </div>
       <div className="p-5 space-y-4">

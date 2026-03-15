@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import FlashcardPractice from './FlashcardPractice'
+import FlashcardEditModal from './FlashcardEditModal'
 
 export default function FlashcardPracticePage({ user, subject, onBack }) {
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [editingCard, setEditingCard] = useState(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     if (!subject?.id || !user?.id) return
@@ -13,7 +16,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
     setLoading(true)
     supabase
       .from('flashcards')
-      .select('id, format, question, answer, options, position')
+      .select('id, format, question, answer, options, position, next_review_at, interval_days')
       .eq('user_id', user.id)
       .eq('subject_id', subject.id)
       .order('position', { ascending: true })
@@ -24,12 +27,23 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
           setCards([])
         } else {
           setError('')
-          setCards(data || [])
+          const list = data || []
+          const now = new Date().toISOString()
+          list.sort((a, b) => {
+            const aDue = !a.next_review_at || a.next_review_at <= now
+            const bDue = !b.next_review_at || b.next_review_at <= now
+            if (aDue && !bDue) return -1
+            if (!aDue && bDue) return 1
+            if (!a.next_review_at && b.next_review_at) return -1
+            if (a.next_review_at && !b.next_review_at) return 1
+            return (a.next_review_at || '').localeCompare(b.next_review_at || '')
+          })
+          setCards(list)
         }
         setLoading(false)
       })
     return () => { mounted = false }
-  }, [user?.id, subject?.id])
+  }, [user?.id, subject?.id, refreshKey])
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-studiio-cream overflow-auto">
@@ -43,6 +57,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
           Zurück zum Fach
         </button>
         <h2 className="text-lg font-semibold text-studiio-ink mt-2">Vokabelmodus — {subject.name}</h2>
+        <p className="text-xs text-studiio-muted mt-1">Fällige und falsch beantwortete Karten erscheinen öfter (Spaced Repetition).</p>
       </div>
       <div className="flex-1 p-4 md:p-6 max-w-2xl mx-auto w-full">
         {loading && (
@@ -60,9 +75,26 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
           </div>
         )}
         {!loading && !error && cards.length > 0 && (
-          <FlashcardPractice user={user} cards={cards} onBack={onBack} />
+          <FlashcardPractice
+            user={user}
+            cards={cards}
+            onBack={onBack}
+            onEditCard={(card) => setEditingCard(card)}
+          />
         )}
       </div>
+
+      {editingCard && (
+        <FlashcardEditModal
+          user={user}
+          card={editingCard}
+          onClose={() => setEditingCard(null)}
+          onSuccess={() => {
+            setRefreshKey((k) => k + 1)
+            setEditingCard(null)
+          }}
+        />
+      )}
     </div>
   )
 }
