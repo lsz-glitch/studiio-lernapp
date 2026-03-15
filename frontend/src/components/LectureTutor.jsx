@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import { recordStreakActivity } from '../utils/streak'
 import { addLearningTime } from '../utils/learningTime'
 import { completeTutorTasksForMaterial } from '../utils/learningPlan'
-
+import { getApiBase } from '../config'
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
 
@@ -39,7 +39,6 @@ class LectureTutorErrorBoundary extends React.Component {
   }
 }
 
-const API_BASE = 'http://localhost:8788'
 const MAX_PDF_CHARS = 35000
 const PDF_TEXT_RETRIES = 3
 const PDF_TEXT_RETRY_DELAY_MS = 1500
@@ -167,7 +166,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   useEffect(() => {
     if (!material?.storage_path) return
 
-    const endpoint = `${API_BASE}/api/pdf-text`
+    const endpoint = `${getApiBase()}/api/pdf-text`
     let cancelled = false
     setPdfTextLoading(true)
     setPdfExtractedText(null)
@@ -286,7 +285,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       system: systemPrompt,
       messages: [{ role: 'user', content: [{ type: 'text', text: userPrompt + '\n\n--- PDF-Inhalt ---\n' + pdfSnippet }] }],
     }
-    const response = await fetch(`${API_BASE}/api/claude`, {
+    const response = await fetch(`${getApiBase()}/api/claude`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey, payload }),
@@ -347,7 +346,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         system,
         messages: [{ role: 'user', content: [{ type: 'text', text: userPrompt }] }],
       }
-      const response = await fetch(`${API_BASE}/api/claude`, {
+      const response = await fetch(`${getApiBase()}/api/claude`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiKey, payload }),
@@ -430,7 +429,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         ],
       }
 
-      const response = await fetch(`${API_BASE}/api/claude`, {
+      const response = await fetch(`${getApiBase()}/api/claude`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

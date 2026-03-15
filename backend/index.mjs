@@ -1,18 +1,26 @@
+/**
+ * Studiio Backend — Claude-Proxy & API
+ * Läuft getrennt vom Vite-Frontend (npm run api).
+ * Lade Umgebungsvariablen aus backend/.env
+ */
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import https from 'https'
 import { createRequire } from 'module'
 import { createClient } from '@supabase/supabase-js'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
 
-// Beim Start prüfen: diese Datei läuft
-const __filename = new URL(import.meta.url).pathname
-console.log('[claudeProxy] Gestartet:', __filename)
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+dotenv.config({ path: join(__dirname, '.env') })
+
+console.log('[Studiio Backend] Gestartet:', __filename)
 
 const require = createRequire(import.meta.url)
 const { PDFParse } = require('pdf-parse')
-
-dotenv.config({ path: new URL('./.env', import.meta.url).pathname })
 
 const app = express()
 const port = process.env.PORT || 8788
@@ -22,7 +30,7 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 if (!supabaseUrl || !supabaseServiceKey) {
   console.warn(
-    '[claudeProxy] SUPABASE_URL oder SUPABASE_SERVICE_ROLE_KEY fehlen. /api/pdf-text wird nicht funktionieren.',
+    '[Studiio Backend] SUPABASE_URL oder SUPABASE_SERVICE_ROLE_KEY fehlen. /api/pdf-text wird nicht funktionieren.',
   )
 }
 
@@ -36,22 +44,20 @@ app.use(cors({
 }))
 app.use(express.json())
 
-// Jede Anfrage in der Konsole anzeigen (damit du siehst, ob der Server sie erreicht)
 app.use((req, res, next) => {
-  console.log('[claudeProxy]', req.method, req.url)
+  console.log('[Studiio Backend]', req.method, req.url)
   next()
 })
 
-// Health sofort als erste Routen (vor allem anderen)
 app.get('/health', (req, res) => {
-  res.json({ ok: true, msg: 'Studiio Proxy', routes: ['/health', '/api/health', 'POST /api/claude', 'POST /api/pdf-text'] })
+  res.json({ ok: true, msg: 'Studiio Backend', routes: ['/health', '/api/health', 'POST /api/claude', 'POST /api/pdf-text'] })
 })
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, routes: ['POST /api/claude', 'POST /api/pdf-text', 'POST /api/generate-flashcards'] })
 })
 app.get('/', (req, res) => {
   res.json({
-    service: 'Studiio Claude Proxy',
+    service: 'Studiio Backend',
     health: 'GET /health oder GET /api/health',
     claude: 'POST /api/claude',
     pdfText: 'POST /api/pdf-text',
@@ -99,7 +105,7 @@ app.post('/api/claude', async (req, res) => {
     }
 
     if (rawBody.status < 200 || rawBody.status >= 300) {
-      console.error('[claudeProxy] Fehler von Anthropic:', rawBody.status, data)
+      console.error('[Studiio Backend] Anthropic Fehler:', rawBody.status, data)
       return res.status(rawBody.status).json(data)
     }
 
@@ -108,7 +114,7 @@ app.post('/api/claude', async (req, res) => {
     const code = err.cause?.code || err.code
     const causeMsg = err.cause?.message || err.message
     const details = code ? `${causeMsg} (${code})` : causeMsg
-    console.error('[claudeProxy] Unerwarteter Fehler:', err)
+    console.error('[Studiio Backend] Unerwarteter Fehler:', err)
     const isNetwork = code && ['ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ENETUNREACH'].includes(code)
     const isFetchFailed = causeMsg === 'fetch failed' || causeMsg?.includes('fetch failed')
     const hint = isNetwork
@@ -137,10 +143,7 @@ app.post('/api/pdf-text', async (req, res) => {
       return res.status(400).json({ error: 'storagePath ist erforderlich.' })
     }
 
-    console.log('[pdf-text] Download aus Supabase Storage:', {
-      bucket: 'materials',
-      path: storagePath,
-    })
+    console.log('[pdf-text] Download aus Supabase Storage:', { bucket: 'materials', path: storagePath })
 
     const { data, error } = await supabaseServerClient.storage
       .from('materials')
@@ -166,17 +169,13 @@ app.post('/api/pdf-text', async (req, res) => {
       await parser.destroy?.()
     }
 
-    return res.status(200).json({
-      text: fullText,
-      numPages,
-    })
+    return res.status(200).json({ text: fullText, numPages })
   } catch (err) {
     console.error('[pdf-text] Unerwarteter Fehler:', err)
     return res.status(500).json({ error: 'Interner Fehler bei der PDF-Text-Extraktion', details: err.message })
   }
 })
 
-// Vokabeln/Karteikarten aus PDF-Inhalt generieren (Claude)
 app.post('/api/generate-flashcards', async (req, res) => {
   try {
     const { apiKey, subjectName, materialFilename, pdfText, focusAttention, focusTheme } = req.body || {}
@@ -246,7 +245,7 @@ ${String(pdfText).slice(0, 80000)}
       data = {}
     }
     if (rawBody.status < 200 || rawBody.status >= 300) {
-      console.error('[claudeProxy] generate-flashcards Anthropic:', rawBody.status, data)
+      console.error('[Studiio Backend] generate-flashcards Anthropic:', rawBody.status, data)
       return res.status(rawBody.status).json(data)
     }
 
@@ -274,12 +273,11 @@ ${String(pdfText).slice(0, 80000)}
 
     return res.status(200).json({ cards })
   } catch (err) {
-    console.error('[claudeProxy] generate-flashcards:', err)
+    console.error('[Studiio Backend] generate-flashcards:', err)
     return res.status(500).json({ error: 'Fehler bei der Vokabel-Generierung', details: err.message })
   }
 })
 
-// Offene Antwort bewerten (KI)
 app.post('/api/evaluate-answer', async (req, res) => {
   try {
     const { apiKey, question, correctAnswer, userAnswer } = req.body || {}
@@ -341,13 +339,11 @@ app.post('/api/evaluate-answer', async (req, res) => {
     }
     return res.status(200).json(result)
   } catch (err) {
-    console.error('[claudeProxy] evaluate-answer:', err)
+    console.error('[Studiio Backend] evaluate-answer:', err)
     return res.status(500).json({ error: 'Fehler bei der Bewertung', details: err.message })
   }
 })
 
-// KI-Vorschlag für Multiple-Choice-Optionen (inkl. richtige Antwort + plausible Falsche)
-// Gibt bei Claude-Fehler trotzdem 200 mit Fallback-Optionen zurück, damit der Nutzer nie "fehlgeschlagen" sieht.
 function fallbackMcqOptions(correctAnswer) {
   const a = String(correctAnswer || '').trim()
   return [a || 'Richtige Antwort', 'Weitere Option 1', 'Weitere Option 2', 'Weitere Option 3'].filter(Boolean)
@@ -396,7 +392,7 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
         },
       )
       clientReq.on('error', (e) => {
-        console.error('[claudeProxy] suggest-mcq-options request error:', e.message)
+        console.error('[Studiio Backend] suggest-mcq-options request error:', e.message)
         reject(e)
       })
       clientReq.write(bodyStr, 'utf8')
@@ -408,7 +404,7 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
     } catch (_) {}
     if (rawBody.status < 200 || rawBody.status >= 300) {
       const errMsg = data?.error?.message || data?.error || (typeof data?.message === 'string' ? data.message : null)
-      console.error('[claudeProxy] suggest-mcq-options Claude error:', rawBody.status, errMsg || rawBody.data)
+      console.error('[Studiio Backend] suggest-mcq-options Claude error:', rawBody.status, errMsg || rawBody.data)
       return res.status(200).json({ options: fallbackMcqOptions(correctAnswer) })
     }
     const firstBlock = data?.content?.[0]
@@ -427,12 +423,11 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
     }
     return res.status(200).json({ options })
   } catch (err) {
-    console.error('[claudeProxy] suggest-mcq-options:', err.message || err)
+    console.error('[Studiio Backend] suggest-mcq-options:', err.message || err)
     return res.status(200).json({ options: fallbackMcqOptions(correctAnswer) })
   }
 })
 
-// 404 am Ende: zeigt an, welche URL angefragt wurde (zum Debuggen)
 app.use((req, res) => {
   res.status(404).json({
     error: 'Route nicht gefunden',
@@ -444,11 +439,10 @@ app.use((req, res) => {
 
 const server = app.listen(port, () => {
   console.log('')
-  console.log(`Claude Proxy Server läuft auf http://localhost:${port}`)
-  console.log(`Zum Testen: Diese Adresse im BROWSER (Chrome/Safari/Firefox) öffnen, nicht im Terminal eingeben:`)
-  console.log(`  → http://localhost:${port}/health`)
-  console.log('')
+  console.log(`Studiio Backend läuft auf http://localhost:${port}`)
+  console.log(`Health-Check: http://localhost:${port}/health`)
   console.log('Dieses Fenster offen lassen – sonst stoppt der Server.')
+  console.log('')
 })
 
 server.on('error', (err) => {
@@ -459,4 +453,3 @@ server.on('error', (err) => {
   }
   process.exit(1)
 })
-
