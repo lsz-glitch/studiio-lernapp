@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "api": "node server/claudeProxy.mjs"
+    "api": "node backend/index.mjs",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.1",
@@ -25,7 +28,9 @@
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
+    "supertest": "^7.0.0",
     "tailwindcss": "^3.4.15",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^2.1.0"
   }
 }

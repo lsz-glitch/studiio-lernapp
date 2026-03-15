@@ -107,9 +107,11 @@ function App() {
       <div className="min-h-screen bg-amber-50 text-gray-900 flex flex-col items-center justify-center px-6 py-12">
         <h1 className="text-2xl font-semibold mb-2">Studiio — Supabase fehlt</h1>
         <p className="text-center max-w-lg text-gray-700">
-          In <code className="bg-white px-1 rounded border">src/config.js</code>{' '}
-          <strong>FALLBACK_SUPABASE_URL</strong> und{' '}
-          <strong>FALLBACK_SUPABASE_ANON_KEY</strong> setzen (Supabase → API).
+          Root-<code className="bg-white px-1 rounded border">.env</code> mit{' '}
+          <strong>VITE_SUPABASE_URL</strong> und{' '}
+          <strong>VITE_SUPABASE_ANON_KEY</strong> — oder in{' '}
+          <code className="bg-white px-1 rounded border">frontend/src/config.js</code>{' '}
+          die <strong>FALLBACK_*</strong>-Werte (Supabase → API).
         </p>
       </div>
     )

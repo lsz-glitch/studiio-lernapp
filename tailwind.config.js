@@ -2,19 +2,23 @@
 import typography from '@tailwindcss/typography'
 
 export default {
-  content: ['./index.html', './src/**/*.{js,jsx}'],
+  content: [
+    './frontend/index.html',
+    './frontend/src/**/*.{js,ts,jsx,tsx}',
+  ],
   theme: {
     extend: {
       colors: {
         studiio: {
-          cream: '#F7F4EF',
-          ink: '#2C2838',
-          muted: '#6B6578',
-          accent: '#6B7FD7',
-          accentHover: '#5A6BC4',
-          lavender: '#D4C8F0',
-          mint: '#C5E8DD',
-          sky: '#C8E0F4',
+          cream: '#faf8f5',
+          mint: '#d4f1e8',
+          lavender: '#e8e0f0',
+          peach: '#fce8dc',
+          sky: '#dceaf7',
+          ink: '#2d2a32',
+          muted: '#6b6572',
+          accent: '#7c6b9e',
+          accentHover: '#63557a',
         },
       },
     },

@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../supabaseClient'
-import { API_BASE } from '../config'
-
-// Im Dev über Vite-Proxy (/api → Backend), sonst API_BASE
-const apiBase = import.meta.env.DEV ? '' : API_BASE
+import { getApiBase } from '../config'
 
 const FORMAT_LABELS = {
   definition: 'Definitions-Abfrage',
@@ -36,7 +33,7 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
     setStep('generating')
     try {
       const apiKey = await getApiKey()
-      const resText = await fetch(`${apiBase}/api/pdf-text`, {
+      const resText = await fetch(`${getApiBase()}/api/pdf-text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storagePath: material.storage_path }),
@@ -52,7 +49,7 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
       }
       const pdfText = textData.text
 
-      const resGen = await fetch(`${apiBase}/api/generate-flashcards`, {
+      const resGen = await fetch(`${getApiBase()}/api/generate-flashcards`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
