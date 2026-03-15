@@ -11,7 +11,7 @@ const CATEGORY_OPTIONS = [
   'Zusatzmaterialien',
 ]
 
-export default function SubjectMaterials({ user, subject, onOpenLecture }) {
+export default function SubjectMaterials({ user, subject, onOpenLecture, onOpenFlashcardCreate }) {
   const [materials, setMaterials] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -312,15 +312,26 @@ export default function SubjectMaterials({ user, subject, onOpenLecture }) {
                           {(m.size_bytes / (1024 * 1024)).toFixed(2)} MB
                         </p>
                       </div>
-                      {m.category === 'Vorlesung' && onOpenLecture && (
-                        <button
-                          type="button"
-                          onClick={() => onOpenLecture(m)}
-                          className="text-[11px] font-medium text-studiio-accent hover:underline"
-                        >
-                          Im Tutor öffnen
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {onOpenFlashcardCreate && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFlashcardCreate(m)}
+                            className="text-[11px] font-medium text-studiio-muted hover:text-studiio-accent"
+                          >
+                            Vokabeln erstellen
+                          </button>
+                        )}
+                        {m.category === 'Vorlesung' && onOpenLecture && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenLecture(m)}
+                            className="text-[11px] font-medium text-studiio-accent hover:underline"
+                          >
+                            Im Tutor öffnen
+                          </button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>

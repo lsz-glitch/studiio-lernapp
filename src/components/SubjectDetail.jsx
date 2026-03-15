@@ -1,6 +1,9 @@
 import React, { useState } from 'react'
 import SubjectMaterials from './SubjectMaterials'
 import LectureTutor from './LectureTutor'
+import FlashcardCreateModal from './FlashcardCreateModal'
+import FlashcardsSection from './FlashcardsSection'
+import FlashcardPracticePage from './FlashcardPracticePage'
 
 class SubjectDetailErrorBoundary extends React.Component {
   constructor(props) {
@@ -50,6 +53,9 @@ function formatCountdown(examDate) {
 
 function SubjectDetailInner({ user, subject, onBack }) {
   const [activeLecture, setActiveLecture] = useState(null)
+  const [flashcardMaterial, setFlashcardMaterial] = useState(null)
+  const [flashcardRefresh, setFlashcardRefresh] = useState(0)
+  const [showFlashcardPractice, setShowFlashcardPractice] = useState(false)
 
   if (activeLecture) {
     return (
@@ -58,6 +64,16 @@ function SubjectDetailInner({ user, subject, onBack }) {
         subject={subject}
         material={activeLecture}
         onBack={() => setActiveLecture(null)}
+      />
+    )
+  }
+
+  if (showFlashcardPractice) {
+    return (
+      <FlashcardPracticePage
+        user={user}
+        subject={subject}
+        onBack={() => setShowFlashcardPractice(false)}
       />
     )
   }
@@ -96,7 +112,34 @@ function SubjectDetailInner({ user, subject, onBack }) {
         user={user}
         subject={subject}
         onOpenLecture={(material) => setActiveLecture(material)}
+        onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
       />
+
+      <section className="border-t border-studiio-lavender/40 pt-4">
+        <h3 className="text-lg font-semibold text-studiio-ink mb-2">Vokabeln / Karteikarten</h3>
+        <p className="text-sm text-studiio-muted mb-3">
+          Pro Fach ein eigenes Vokabel-System. Klicke auf „Vokabeln üben“, um Frage für Frage abgefragt zu werden.
+        </p>
+        <FlashcardsSection
+          user={user}
+          subject={subject}
+          refreshTrigger={flashcardRefresh}
+          onStartPractice={() => setShowFlashcardPractice(true)}
+        />
+      </section>
+
+      {flashcardMaterial && (
+        <FlashcardCreateModal
+          user={user}
+          subject={subject}
+          material={flashcardMaterial}
+          onClose={() => setFlashcardMaterial(null)}
+          onSuccess={() => {
+            setFlashcardRefresh((n) => n + 1)
+            setFlashcardMaterial(null)
+          }}
+        />
+      )}
     </div>
   )
 }
