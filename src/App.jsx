@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
