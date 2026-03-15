@@ -1,10 +1,8 @@
 import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
-import { API_BASE } from '../config'
+import { getApiBase } from '../config'
 import { recordStreakActivity } from '../utils/streak'
-
-const apiBase = import.meta.env.DEV ? '' : API_BASE
 
 // Anki-ähnlich: Intervall-Stufen in Tagen (falsch → 0, richtig → 1, 3, 7, 14, 30)
 const INTERVAL_STEPS = [0, 1, 3, 7, 14, 30]
@@ -70,7 +68,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
         setEvaluating(false)
         return
       }
-      const res = await fetch(`${apiBase}/api/evaluate-answer`, {
+      const res = await fetch(`${getApiBase()}/api/evaluate-answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

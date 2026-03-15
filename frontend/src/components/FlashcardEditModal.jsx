@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
-import { API_BASE } from '../config'
-
-const apiBase = import.meta.env.DEV ? '' : API_BASE
+import { getApiBase } from '../config'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
 export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
@@ -46,7 +44,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
         return
       }
       const existingOpts = optionsText.split(/\n/).map((s) => s.trim()).filter(Boolean)
-      const res = await fetch(`${apiBase}/api/suggest-mcq-options`, {
+      const res = await fetch(`${getApiBase()}/api/suggest-mcq-options`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
