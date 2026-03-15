@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient'
 import ReactMarkdown from 'react-markdown'
 import { recordStreakActivity } from '../utils/streak'
 import { addLearningTime } from '../utils/learningTime'
+import { completeTutorTasksForMaterial } from '../utils/learningPlan'
 
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
@@ -43,7 +44,10 @@ const MAX_PDF_CHARS = 35000
 const PDF_TEXT_RETRIES = 3
 const PDF_TEXT_RETRY_DELAY_MS = 1500
 
+const isExerciseCategory = (cat) => cat === 'Übung' || cat === 'Tutorium'
+
 function LectureTutorInner({ user, subject, material, onBack }) {
+  const isExerciseMode = isExerciseCategory(material?.category)
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfError, setPdfError] = useState(null)
   const [pdfExtractedText, setPdfExtractedText] = useState(null)
@@ -56,11 +60,13 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [started, setStarted] = useState(false)
+  const [currentTaskText, setCurrentTaskText] = useState(null)
   const [materialIndex, setMaterialIndex] = useState(1)
   const [totalMaterials, setTotalMaterials] = useState(0)
   const [pdfZoom, setPdfZoom] = useState(1)
   const sessionStartRef = useRef(Date.now())
   const savedSecondsRef = useRef(0)
+  const pdfBlobRef = useRef(null)
 
   // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
   useEffect(() => {
@@ -127,13 +133,14 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         }
 
         if (data.type && data.type !== 'application/pdf') {
-          console.error('[LectureTutor] Unerwartiger MIME-Typ für PDF:', data.type)
+          console.error('[LectureTutor] Unerwarteter MIME-Typ:', data.type)
           setPdfError(
-            `Erwartet wurde eine PDF (application/pdf), aber erhalten: ${data.type}. Prüfe, ob im Bucket „materials“ wirklich eine PDF liegt und ob die Policies stattdessen keine HTML-Fehlerseite zurückgeben.`,
+            `Erwartet: application/pdf, erhalten: ${data.type}.`,
           )
           return
         }
 
+        pdfBlobRef.current = data
         objectUrl = URL.createObjectURL(data)
         setPdfUrl(objectUrl)
         setPdfError(null)
@@ -146,9 +153,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     loadUrl()
 
     return () => {
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      pdfBlobRef.current = null
     }
   }, [material.storage_path])
 
@@ -267,6 +273,103 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       throw new Error('Kein Claude API Key hinterlegt. Bitte in den Einstellungen eintragen.')
     }
     return data.claude_api_key_encrypted
+  }
+
+  async function callClaude(systemPrompt, userPrompt) {
+    const apiKey = await fetchClaudeApiKey()
+    const pdfSnippet = pdfExtractedText
+      ? (pdfExtractedText.length > MAX_PDF_CHARS ? pdfExtractedText.slice(0, MAX_PDF_CHARS) + '\n[... gekürzt]' : pdfExtractedText)
+      : '(PDF-Text nicht verfügbar.)'
+    const payload = {
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: [{ type: 'text', text: userPrompt + '\n\n--- PDF-Inhalt ---\n' + pdfSnippet }] }],
+    }
+    const response = await fetch(`${API_BASE}/api/claude`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, payload }),
+    })
+    const responseText = await response.text()
+    if (!response.ok) {
+      let msg = 'KI-Anfrage fehlgeschlagen.'
+      try {
+        const err = JSON.parse(responseText)
+        if (err?.error?.message) msg = err.error.message
+        else if (typeof err?.error === 'string') msg = err.error
+      } catch (_) {}
+      throw new Error(msg)
+    }
+    const data = JSON.parse(responseText)
+    return data?.content?.[0]?.text || ''
+  }
+
+  async function fetchExerciseTask(taskNum) {
+    setLoading(true)
+    try {
+      const system =
+        'Du bekommst den Inhalt eines Übungsblatts oder Tutoriums (PDF-Text). ' +
+        'Deine Aufgabe: Nimm die genannte Aufgabe (Frage/Aufgabentext) aus dem PDF und stelle sie 1:1 so, wie sie im PDF steht. ' +
+        'Übernimm den Text wörtlich – keine Umformulierung, keine Zusammenfassung, keine Erklärung, keine Lösung. ' +
+        'Antworte NUR mit dem exakten Aufgabentext aus der PDF (die Frage/die Aufgabe so, wie sie der/die Studierende dort liest). ' +
+        'Wenn es mehrere Aufgaben gibt, nimm die n-te (n = angegebene Nummer). Kein „Aufgabe 1:“ oder ähnliches davor – nur den Aufgabentext aus der PDF.'
+      const user =
+        `Fach: ${subject.name}. Datei: ${material.filename}.\n` +
+        `Stelle die Aufgabe Nummer ${taskNum} aus dem PDF – übernimm sie wörtlich aus dem PDF-Text.`
+      const text = await callClaude(system, user)
+      const taskText = (text || 'Keine Aufgabe gefunden.').trim()
+      setCurrentTaskText(taskText)
+      setMessages((prev) => [...prev, { role: 'assistant', content: `**Aufgabe ${taskNum}**\n\n${taskText}` }])
+      recordStreakActivity(user?.id)
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: 'assistant', content: err?.message || 'Aufgabe konnte nicht geladen werden.' }])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function sendExerciseEvaluate(taskText, userAnswer) {
+    setLoading(true)
+    try {
+      const apiKey = await fetchClaudeApiKey()
+      const system =
+        'Du bist ein deutschsprachiger Tutor für Übungen. Du bekommst eine Aufgabenstellung und die Antwort/Lösung des/der Studierenden. ' +
+        'Bewerte die Antwort (richtig / teilweise richtig / falsch). Gib klares, freundliches Feedback. Erkläre bei Bedarf die Musterlösung oder was gefehlt hat. ' +
+        'Antworte auf Deutsch, in kurzen Absätzen. Stelle danach keine neue Aufgabe.'
+      const userPrompt =
+        `Aufgabe:\n${taskText}\n\n` +
+        `Antwort des/der Studierenden:\n${userAnswer}\n\n` +
+        'Bewerte die Antwort und gib Feedback bzw. Erklärung.'
+      const payload = {
+        model: CLAUDE_MODEL,
+        max_tokens: 1024,
+        system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: userPrompt }] }],
+      }
+      const response = await fetch(`${API_BASE}/api/claude`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, payload }),
+      })
+      const responseText = await response.text()
+      if (!response.ok) throw new Error('Bewertung fehlgeschlagen.')
+      const data = JSON.parse(responseText)
+      const feedback = data?.content?.[0]?.text || 'Kein Feedback erhalten.'
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: userAnswer },
+        { role: 'assistant', content: feedback },
+      ])
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', content: userAnswer },
+        { role: 'assistant', content: err?.message || 'Bewertung konnte nicht geladen werden.' },
+      ])
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function sendToClaude({ userMessage, mode }) {
@@ -398,7 +501,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     if (!input.trim()) return
     const text = input.trim()
     setInput('')
-    sendToClaude({ userMessage: text, mode: 'answer' })
+    if (isExerciseMode) {
+      if (currentTaskText) sendExerciseEvaluate(currentTaskText, text)
+      else setMessages((prev) => [...prev, { role: 'user', content: text }])
+    } else {
+      sendToClaude({ userMessage: text, mode: 'answer' })
+    }
+  }
+
+  function handleNextExercise() {
+    setTopicIndex((idx) => idx + 1)
+    setCurrentTaskText(null)
+    fetchExerciseTask(topicIndex + 1)
   }
 
   function handleSkip(type) {
@@ -420,10 +534,11 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     const hasPdfText = pdfExtractedText != null && pdfExtractedText.length > 0
     if (!started && pdfUrl && !pdfError && !pdfTextLoading && hasPdfText && messages.length === 0) {
       setStarted(true)
-      sendToClaude({ userMessage: '', mode: 'explain' })
+      if (isExerciseMode) fetchExerciseTask(1)
+      else sendToClaude({ userMessage: '', mode: 'explain' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfUrl, pdfError, pdfTextLoading, pdfExtractedText, started, messages.length])
+  }, [pdfUrl, pdfError, pdfTextLoading, pdfExtractedText, started, messages.length, isExerciseMode])
 
   const progressPercent =
     totalMaterials > 0 ? Math.min(100, Math.round((materialIndex / totalMaterials) * 100)) : null
@@ -444,6 +559,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             const totalSec = (Date.now() - sessionStartRef.current) / 1000
             const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
             if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
+            if (user?.id && material?.id) await completeTutorTasksForMaterial(user.id, material.id)
             onBack()
           }}
           className="inline-flex items-center gap-1 text-sm text-studiio-accent hover:underline font-medium"
@@ -482,7 +598,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
               {material.filename}
             </h2>
             <span className="text-xs text-studiio-muted">
-              Seite {Math.min(topicIndex, pdfNumPages || topicIndex)}{pdfNumPages > 0 ? ` von ${pdfNumPages}` : ''}
+              {isExerciseMode ? `Aufgabe ${topicIndex}` : `Seite ${Math.min(topicIndex, pdfNumPages || topicIndex)}${pdfNumPages > 0 ? ` von ${pdfNumPages}` : ''}`}
             </span>
           </header>
           <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-studiio-sky/30 p-2">
@@ -495,8 +611,9 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                 </p>
               </div>
             ) : pdfUrl ? (
-              <div className="w-full h-full overflow-auto flex items-start justify-center p-2">
+              <div className="w-full h-full overflow-auto flex flex-col items-center justify-start p-2 gap-2">
                 <iframe
+                  key={pdfUrlWithPage}
                   src={pdfUrlWithPage}
                   title={material.filename}
                   className="flex-shrink-0 border-0 bg-white rounded-lg shadow-md"
@@ -506,7 +623,19 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                     minWidth: 240,
                     minHeight: 320,
                   }}
+                  sandbox="allow-same-origin"
                 />
+                <p className="text-xs text-studiio-muted">
+                  Zeigt die PDF „Load failed“?{' '}
+                  <a
+                    href={pdfUrlWithPage}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-studiio-accent hover:underline"
+                  >
+                    PDF in neuem Tab öffnen
+                  </a>
+                </p>
               </div>
             ) : (
               <p className="text-sm text-studiio-muted">PDF wird geladen …</p>
@@ -532,29 +661,43 @@ function LectureTutorInner({ user, subject, material, onBack }) {
               ))}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleAskForSlide}
-                disabled={loading || pdfTextLoading || !pdfExtractedText}
-                className="studiio-btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                title={!pdfExtractedText && !pdfTextLoading ? 'Zuerst PDF-Text laden' : undefined}
-              >
-                {loading ? '…' : pdfTextLoading ? 'Laden …' : 'Nächstes Thema'}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSkip('known')}
-                className="rounded-lg border-2 border-studiio-mint/80 bg-studiio-mint/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-mint/50"
-              >
-                Kann ich bereits
-              </button>
-              <button
-                type="button"
-                onClick={() => handleSkip('irrelevant')}
-                className="rounded-lg border-2 border-studiio-peach/80 bg-studiio-peach/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-peach/50"
-              >
-                Nicht relevant
-              </button>
+              {isExerciseMode ? (
+                <button
+                  type="button"
+                  onClick={handleNextExercise}
+                  disabled={loading || pdfTextLoading || !pdfExtractedText}
+                  className="studiio-btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={!pdfExtractedText && !pdfTextLoading ? 'Zuerst PDF-Text laden' : undefined}
+                >
+                  {loading ? '…' : pdfTextLoading ? 'Laden …' : 'Nächste Aufgabe'}
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleAskForSlide}
+                    disabled={loading || pdfTextLoading || !pdfExtractedText}
+                    className="studiio-btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={!pdfExtractedText && !pdfTextLoading ? 'Zuerst PDF-Text laden' : undefined}
+                  >
+                    {loading ? '…' : pdfTextLoading ? 'Laden …' : 'Nächstes Thema'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSkip('known')}
+                    className="rounded-lg border-2 border-studiio-mint/80 bg-studiio-mint/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-mint/50"
+                  >
+                    Kann ich bereits
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSkip('irrelevant')}
+                    className="rounded-lg border-2 border-studiio-peach/80 bg-studiio-peach/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-peach/50"
+                  >
+                    Nicht relevant
+                  </button>
+                </>
+              )}
             </div>
           </div>
           {(pdfTextLoading || pdfTextError) && (
@@ -615,7 +758,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Deine Frage oder Bitte an den Tutor …"
+              placeholder={isExerciseMode ? 'Deine Lösung oder Antwort eingeben …' : 'Deine Frage oder Bitte an den Tutor …'}
               className="studiio-input flex-1 text-base py-2.5"
             />
             <button

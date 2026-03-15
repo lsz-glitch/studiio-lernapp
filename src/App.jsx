@@ -14,6 +14,7 @@ function App() {
   const [activeView, setActiveView] = useState('overview') // 'overview' | 'settings'
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [openToPractice, setOpenToPractice] = useState(false)
+  const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -187,6 +188,8 @@ function App() {
               onBack={() => setSelectedSubject(null)}
               openToPractice={openToPractice}
               onOpenToPracticeHandled={() => setOpenToPractice(false)}
+              openToTutorMaterialId={openToTutorMaterialId}
+              onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
             />
           ) : (
             <DashboardSubjects
@@ -195,6 +198,10 @@ function App() {
               onStartPractice={(subject) => {
                 setSelectedSubject(subject)
                 setOpenToPractice(true)
+              }}
+              onOpenTutor={(subject, materialId) => {
+                setSelectedSubject(subject)
+                setOpenToTutorMaterialId(materialId)
               }}
             />
           )

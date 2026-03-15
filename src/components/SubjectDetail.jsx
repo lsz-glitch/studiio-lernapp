@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { supabase } from '../supabaseClient'
 import SubjectMaterials from './SubjectMaterials'
 import LectureTutor from './LectureTutor'
 import FlashcardCreateModal from './FlashcardCreateModal'
@@ -53,7 +54,7 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPracticeHandled }) {
+function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPracticeHandled, openToTutorMaterialId, onOpenToTutorHandled }) {
   const [activeLecture, setActiveLecture] = useState(null)
   const [flashcardMaterial, setFlashcardMaterial] = useState(null)
   const [flashcardRefresh, setFlashcardRefresh] = useState(0)
@@ -81,6 +82,25 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       onOpenToPracticeHandled?.()
     }
   }, [openToPractice, subject?.id])
+
+  // Direkt vom Lernplan „Datei mit Tutor durcharbeiten“ geöffnet?
+  React.useEffect(() => {
+    if (!openToTutorMaterialId || !subject?.id || !user?.id) return
+    let mounted = true
+    supabase
+      .from('materials')
+      .select('id, filename, category, storage_path')
+      .eq('id', openToTutorMaterialId)
+      .eq('subject_id', subject.id)
+      .eq('user_id', user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!mounted) return
+        onOpenToTutorHandled?.()
+        if (!error && data) setActiveLecture(data)
+      })
+    return () => { mounted = false }
+  }, [openToTutorMaterialId, subject?.id, user?.id])
 
   if (activeLecture) {
     return (

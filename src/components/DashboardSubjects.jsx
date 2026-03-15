@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import SubjectProgressMini from './SubjectProgressMini'
+import LearningPlan from './LearningPlan'
 import { getStreak } from '../utils/streak'
 
 function getCardStyle(pct) {
@@ -30,7 +31,7 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-export default function DashboardSubjects({ user, onOpenSubject, onStartPractice }) {
+export default function DashboardSubjects({ user, onOpenSubject, onStartPractice, onOpenTutor }) {
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -196,6 +197,15 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
           </p>
         )}
       </div>
+
+      <LearningPlan
+        user={user}
+        subjects={subjects}
+        onOpenSubject={onOpenSubject}
+        onStartPractice={onStartPractice}
+        onOpenTutor={onOpenTutor}
+      />
+
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>

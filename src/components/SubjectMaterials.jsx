@@ -376,7 +376,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                             </button>
                           )
                         )}
-                        {m.category === 'Vorlesung' && onOpenLecture && (
+                        {['Vorlesung', 'Übung', 'Tutorium'].includes(m.category) && onOpenLecture && (
                           <button
                             type="button"
                             onClick={() => onOpenLecture(m)}

@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient'
 import FlashcardPractice from './FlashcardPractice'
 import FlashcardEditModal from './FlashcardEditModal'
 import { addLearningTime } from '../utils/learningTime'
+import { completeVocabTasksForSubjectToday } from '../utils/learningPlan'
 
 export default function FlashcardPracticePage({ user, subject, onBack }) {
   const [cards, setCards] = useState([])
@@ -27,6 +28,7 @@ export default function FlashcardPracticePage({ user, subject, onBack }) {
     const totalSec = (Date.now() - sessionStartRef.current) / 1000
     const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
     if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
+    if (user?.id && subject?.id) await completeVocabTasksForSubjectToday(user.id, subject.id)
     onBack()
   }
 
