@@ -12,8 +12,17 @@ export const FALLBACK_SUPABASE_ANON_KEY = ''
 export const MAX_STORAGE_PER_USER_MB = 20
 export const DEFAULT_EXAM_TIMER_MINUTES = 90
 
-/** Basis-URL des Backend-Servers (Claude-Proxy & API). In Production ggf. VITE_API_BASE setzen. */
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8788'
+/**
+ * Basis-URL des Backend-Servers (Claude-Proxy & API). In Production VITE_API_BASE setzen
+ * (z. B. https://dein-backend.example.com — ohne /api am Ende, ohne Slash am Ende).
+ */
+function normalizeApiBase(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return 'http://localhost:8788'
+  return s.replace(/\/+$/, '')
+}
+
+export const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE)
 
 /**
  * URL-Präfix für API-Aufrufe: in Dev leer (Vite-Proxy leitet /api weiter), sonst API_BASE.

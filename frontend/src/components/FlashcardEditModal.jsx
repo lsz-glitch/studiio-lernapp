@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { getApiBase } from '../config'
+import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
 import { getUserAiConfig } from '../utils/aiProvider'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
@@ -51,7 +52,19 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
           existingOptions: existingOpts.length > 0 ? existingOpts : undefined,
         }),
       })
-      const data = await res.json().catch(() => ({}))
+      const raw = await res.text()
+      if (isLikelyHtmlResponse(raw)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      let data = {}
+      try {
+        data = JSON.parse(raw || '{}')
+      } catch (_) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(data)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       if (!res.ok) {
         const msg = [data.error, data.details].filter(Boolean).join(' — ') || 'Vorschlag fehlgeschlagen.'
         throw new Error(msg)

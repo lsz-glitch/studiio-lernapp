@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { getApiBase } from '../config'
+import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
 import { getUserAiConfig } from '../utils/aiProvider'
 
 const FORMAT_LABELS = {
@@ -33,7 +34,20 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ materialId: material.id, storagePath: material.storage_path }),
       })
-      const textData = await resText.json().catch(() => ({}))
+      const rawPdf = await resText.text()
+      const textData = (() => {
+        try {
+          return JSON.parse(rawPdf || '{}')
+        } catch (_) {
+          return {}
+        }
+      })()
+      if (isLikelyHtmlResponse(rawPdf)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(textData)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       if (resText.status === 404 || (textData && textData.error === 'Route nicht gefunden')) {
         throw new Error(
           'API-Route nicht gefunden. Bitte starte den API-Server neu (im Projektordner: npm run api) und lade die Seite neu.'
@@ -57,7 +71,20 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
           focusTheme: focusTheme.trim() || undefined,
         }),
       })
-      const genData = await resGen.json().catch(() => ({}))
+      const rawGen = await resGen.text()
+      const genData = (() => {
+        try {
+          return JSON.parse(rawGen || '{}')
+        } catch (_) {
+          return {}
+        }
+      })()
+      if (isLikelyHtmlResponse(rawGen)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(genData)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       if (resGen.status === 404 || (genData && genData.error === 'Route nicht gefunden')) {
         throw new Error(
           'API-Route nicht gefunden. Bitte starte den API-Server neu (im Projektordner: npm run api) und lade die Seite neu.'

@@ -6,6 +6,7 @@ import { addLearningTime } from '../utils/learningTime'
 import { completeTutorTasksForMaterial } from '../utils/learningPlan'
 import CompletionCelebration from './CompletionCelebration'
 import { getApiBase } from '../config'
+import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
 import { getUserAiConfig } from '../utils/aiProvider'
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
@@ -268,7 +269,35 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           setPdfTextError(`Server: ${res.status} – ${msg}`)
           return
         }
-        const data = JSON.parse(text || '{}')
+        if (isLikelyHtmlResponse(text)) {
+          if (attempt < PDF_TEXT_RETRIES) {
+            await new Promise((r) => setTimeout(r, PDF_TEXT_RETRY_DELAY_MS))
+            return fetchWithRetry(attempt + 1)
+          }
+          setPdfTextError(
+            'Die API hat HTML statt JSON geliefert (falsche URL oder kein Backend). ' + MSG_API_WRONG_ENDPOINT,
+          )
+          return
+        }
+        let data
+        try {
+          data = JSON.parse(text || '{}')
+        } catch (parseErr) {
+          if (attempt < PDF_TEXT_RETRIES) {
+            await new Promise((r) => setTimeout(r, PDF_TEXT_RETRY_DELAY_MS))
+            return fetchWithRetry(attempt + 1)
+          }
+          setPdfTextError('Ungültige API-Antwort (kein JSON). Bitte Backend und VITE_API_BASE prüfen.')
+          return
+        }
+        if (isBackendInfoRootResponse(data)) {
+          if (attempt < PDF_TEXT_RETRIES) {
+            await new Promise((r) => setTimeout(r, PDF_TEXT_RETRY_DELAY_MS))
+            return fetchWithRetry(attempt + 1)
+          }
+          setPdfTextError(MSG_API_WRONG_ENDPOINT)
+          return
+        }
         if (data.error) {
           if (attempt < PDF_TEXT_RETRIES) {
             await new Promise((r) => setTimeout(r, PDF_TEXT_RETRY_DELAY_MS))
@@ -500,7 +529,15 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       } catch (_) {}
       throw new Error(msg)
     }
-    const data = JSON.parse(responseText)
+    let data
+    try {
+      data = JSON.parse(responseText)
+    } catch (_) {
+      throw new Error(MSG_API_WRONG_ENDPOINT)
+    }
+    if (isBackendInfoRootResponse(data)) {
+      throw new Error(MSG_API_WRONG_ENDPOINT)
+    }
     return data?.content?.[0]?.text || ''
   }
 
@@ -553,7 +590,15 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       })
       const responseText = await response.text()
       if (!response.ok) throw new Error('Bewertung fehlgeschlagen.')
-      const data = JSON.parse(responseText)
+      let data
+      try {
+        data = JSON.parse(responseText)
+      } catch (_) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(data)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       const feedback = data?.content?.[0]?.text || 'Kein Feedback erhalten.'
       setMessages((prev) => [
         ...prev,
@@ -676,7 +721,15 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         throw new Error(message)
       }
 
-      const data = JSON.parse(responseText)
+      let data
+      try {
+        data = JSON.parse(responseText)
+      } catch (_) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(data)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       let text = data?.content?.[0]?.text || 'Keine Antwort vom Tutor erhalten.'
       if (mode === 'explain') {
         text = ensureExplainQuestion(text, currentStartPage, currentEndPage)

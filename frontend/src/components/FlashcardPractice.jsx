@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { getApiBase } from '../config'
+import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
 import { recordStreakActivity } from '../utils/streak'
 import { getUserAiConfig } from '../utils/aiProvider'
 
@@ -75,7 +76,19 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
           userAnswer: openAnswer.trim(),
         }),
       })
-      const result = await res.json().catch(() => ({}))
+      const raw = await res.text()
+      if (isLikelyHtmlResponse(raw)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      let result = {}
+      try {
+        result = JSON.parse(raw || '{}')
+      } catch (_) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (isBackendInfoRootResponse(result)) {
+        throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
       const correct = !!result.correct
       setEvaluation({ correct, feedback: result.feedback || (correct ? 'Richtig.' : 'Leider nicht ganz.') })
       await saveReview(card.id, correct, card.interval_days ?? 0)
