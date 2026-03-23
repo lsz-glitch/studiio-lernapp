@@ -10,7 +10,8 @@ export default defineConfig({
   root: 'frontend',
   envDir: projectRoot,
   plugins: [react()],
-  base: '/',
+  // Bei Deployment unter Unterpfad (z. B. /studiio-lernapp/) hier anpassen, sonst '/'
+  base: process.env.VITE_BASE_PATH || '/',
   server: {
     proxy: {
       '/api': {

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { getApiBase } from '../config'
+import { getUserAiConfig } from '../utils/aiProvider'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
 export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
@@ -33,12 +34,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
     setSuggestLoading(true)
     setError('')
     try {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('claude_api_key_encrypted')
-        .eq('id', user.id)
-        .maybeSingle()
-      const apiKey = profile?.claude_api_key_encrypted
+      const { apiKey, provider } = await getUserAiConfig(user.id)
       if (!apiKey) {
         setError('Kein API-Key. Bitte in den Einstellungen eintragen.')
         return
@@ -49,6 +45,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           apiKey,
+          provider,
           question: question.trim(),
           correctAnswer: answer.trim(),
           existingOptions: existingOpts.length > 0 ? existingOpts : undefined,

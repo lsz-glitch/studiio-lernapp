@@ -20,10 +20,12 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
 
   const [selectedFiles, setSelectedFiles] = useState([]) // [{file, category}]
   const [uploading, setUploading] = useState(false)
+  const [deletingMaterialId, setDeletingMaterialId] = useState(null)
   const [showUploadForm, setShowUploadForm] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
 
   const [totalBytes, setTotalBytes] = useState(0)
+  const [completedTutorMaterialIds, setCompletedTutorMaterialIds] = useState(new Set())
 
   useEffect(() => {
     let isMounted = true
@@ -38,12 +40,14 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         .select('id, filename, category, size_bytes, created_at, storage_path')
         .eq('user_id', user.id)
         .eq('subject_id', subject.id)
+        .is('deleted_at', null)
         .order('created_at', { ascending: false })
 
       const { data: sizeRows, error: sizeErr } = await supabase
         .from('materials')
         .select('size_bytes')
         .eq('user_id', user.id)
+        .is('deleted_at', null)
 
       if (!isMounted) return
 
@@ -85,6 +89,24 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         const ids = new Set((data || []).map((r) => r.material_id).filter(Boolean))
         setMaterialIdsWithGeneratedCards(ids)
       })
+    return () => { mounted = false }
+  }, [user.id, subject.id, refreshTrigger])
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tutor_progress')
+          .select('material_id')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('is_completed', true)
+        if (!mounted || error) return
+        const ids = new Set((data || []).map((r) => r.material_id).filter(Boolean))
+        setCompletedTutorMaterialIds(ids)
+      } catch (_) {}
+    })()
     return () => { mounted = false }
   }, [user.id, subject.id, refreshTrigger])
 
@@ -152,6 +174,19 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     )
   }
 
+  function handleOpenTutor(materialRow) {
+    if (!onOpenLecture) return
+    const alreadyCompleted = completedTutorMaterialIds.has(materialRow.id)
+    if (!alreadyCompleted) {
+      onOpenLecture(materialRow)
+      return
+    }
+    const shouldReopen = window.confirm(
+      'Diese Datei ist bereits als "Tutor erledigt" markiert. Möchtest du sie erneut durcharbeiten?',
+    )
+    if (shouldReopen) onOpenLecture(materialRow)
+  }
+
   async function handleUpload(e) {
     e.preventDefault()
     setError('')
@@ -213,6 +248,20 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         return
       }
 
+      // PDF direkt nach Upload indizieren (best effort), damit Tutor später nicht erneut parsen muss.
+      try {
+        await fetch('/api/index-material-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            materialId: row.id,
+            storagePath: path,
+          }),
+        })
+      } catch (_) {
+        // Kein harter Fehler: Tutor nutzt dann Fallback-Extraktion bei Bedarf.
+      }
+
       newRows.push({ row, size: file.size })
     }
 
@@ -223,6 +272,43 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     setSelectedFiles([])
     setInfo('Dateien wurden erfolgreich hochgeladen.')
     setUploading(false)
+  }
+
+  async function handleDeleteMaterial(materialRow) {
+    const ok = window.confirm(
+      `Datei wirklich aus diesem Fach entfernen?\n\n${materialRow.filename}\n\nHinweis: Der gespeicherte Folienkontext bleibt erhalten.`,
+    )
+    if (!ok) return
+    setDeletingMaterialId(materialRow.id)
+    setError('')
+    setInfo('')
+    const { error: delErr } = await supabase
+      .from('materials')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', materialRow.id)
+      .eq('user_id', user.id)
+    if (delErr) {
+      setError(
+        `Löschen nicht möglich: ${delErr.message}. Bitte zuerst die SQL-Datei für Soft-Delete ausführen.`,
+      )
+      setDeletingMaterialId(null)
+      return
+    }
+
+    setMaterials((prev) => prev.filter((x) => x.id !== materialRow.id))
+    setTotalBytes((prev) => Math.max(0, prev - (materialRow.size_bytes || 0)))
+    setCompletedTutorMaterialIds((prev) => {
+      const next = new Set(prev)
+      next.delete(materialRow.id)
+      return next
+    })
+    setMaterialIdsWithGeneratedCards((prev) => {
+      const next = new Set(prev)
+      next.delete(materialRow.id)
+      return next
+    })
+    setInfo(`Datei entfernt: ${materialRow.filename}`)
+    setDeletingMaterialId(null)
   }
 
   return (
@@ -348,9 +434,18 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                 <h6 className="text-[11px] font-semibold text-studiio-muted mb-1">{category}</h6>
                 <ul className="space-y-1">
                   {items.map((m) => (
+                    (() => {
+                      const tutorDone = completedTutorMaterialIds.has(m.id)
+                      const cardsDone = materialIdsWithGeneratedCards.has(m.id)
+                      const fullyDone = tutorDone && cardsDone
+                      return (
                     <li
                       key={m.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/80 px-3 py-1.5"
+                      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-1.5 ${
+                        fullyDone
+                          ? 'bg-green-50 border border-green-200'
+                          : 'bg-white/80'
+                      }`}
                     >
                       <div className="min-w-0">
                         <p className="text-xs font-medium text-studiio-ink truncate">
@@ -377,16 +472,49 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                           )
                         )}
                         {['Vorlesung', 'Übung', 'Tutorium'].includes(m.category) && onOpenLecture && (
+                          <>
+                            {completedTutorMaterialIds.has(m.id) ? (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenTutor(m)}
+                                className="text-[11px] font-medium text-green-700 hover:underline"
+                                title="Bereits im Tutor durchgearbeitet – erneut starten"
+                              >
+                                Tutor erledigt
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenTutor(m)}
+                                className="text-[11px] font-medium text-studiio-accent hover:underline"
+                              >
+                                Im Tutor öffnen
+                              </button>
+                            )}
+                            {fullyDone && (
+                              <span
+                                className="text-[11px] font-medium text-green-700"
+                                title="Tutor abgeschlossen und Vokabeln erstellt"
+                              >
+                                Vollständig
+                              </span>
+                            )}
+                          </>
+                        )}
+                        {showUploadForm && (
                           <button
                             type="button"
-                            onClick={() => onOpenLecture(m)}
-                            className="text-[11px] font-medium text-studiio-accent hover:underline"
+                            onClick={() => handleDeleteMaterial(m)}
+                            disabled={deletingMaterialId === m.id}
+                            className="text-[11px] font-medium text-red-600 hover:underline disabled:opacity-50"
                           >
-                            Im Tutor öffnen
+                            {deletingMaterialId === m.id ? 'Löscht …' : 'Löschen'}
                           </button>
                         )}
                       </div>
                     </li>
+                      )
+                    })()
                   ))}
                 </ul>
               </div>

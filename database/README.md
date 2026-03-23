@@ -18,6 +18,12 @@ Alle SQL-Skripte für das Supabase-Schema. Sie werden **manuell** im [Supabase S
 5. **Lernplan**
    - `supabase-learning-plan.sql` – Tabelle `learning_plan_tasks` (Tutor, Vokabeln, Klausur, manuell)
    - `supabase-learning-plan-description.sql` – ggf. Spalte `description` für Tasks
+6. **Optional: PDF-Text-Caching**
+   - `supabase-materials-extracted-text.sql` – Spalten in `materials` für extrahierten PDF-Text (`extracted_text`, `extracted_num_pages`, `extracted_at`)
+7. **Optional: Seitenkontext (Tutor)**
+   - `supabase-material-page-contexts.sql` – speichert Seiten-Zusammenfassungen pro Material und Version (Cache gegen doppelte KI-Kosten)
+8. **Tutor-Session-Persistenz**
+   - `supabase-tutor-progress.sql` – speichert Tutor-Stand pro Nutzer+Material (Pause/Weiter, Verlauf, Completion)
 
 Abhängigkeiten in den Dateien prüfen (z. B. `subjects`, `materials`, `auth.users`); bei Fehlern zuerst fehlende Tabellen anlegen.
 
@@ -34,3 +40,6 @@ Abhängigkeiten in den Dateien prüfen (z. B. `subjects`, `materials`, `auth.use
 | `supabase-learning-time.sql` | Lernzeit-Tracking pro Fach |
 | `supabase-learning-plan.sql` | Tabelle `learning_plan_tasks` |
 | `supabase-learning-plan-description.sql` | Beschreibung für Lernplan-Tasks |
+| `supabase-materials-extracted-text.sql` | Caching von extrahiertem PDF-Text in `materials` |
+| `supabase-material-page-contexts.sql` | Seitenkontext-Cache für Tutor |
+| `supabase-tutor-progress.sql` | Persistenter Tutor-Stand inkl. Abschlussstatus |

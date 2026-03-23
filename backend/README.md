@@ -1,6 +1,6 @@
 # Studiio Backend
 
-Der Backend-Server für Studiio: Claude-Proxy (BYOK) und API für PDF-Text-Extraktion, Karteikarten-Generierung und Antwortbewertung. Dieser Server ist die einzige Stelle, die Anthropic aufruft und den Supabase Service-Role-Key für den PDF-Download aus Storage nutzt.
+Der Backend-Server für Studiio: KI-Proxy (BYOK) und API für PDF-Text-Extraktion, Karteikarten-Generierung und Antwortbewertung. Dieser Server nutzt den Supabase Service-Role-Key für den PDF-Download aus Storage.
 
 ## Start
 
@@ -26,10 +26,10 @@ Ohne Supabase-Variablen funktioniert der Claude-Proxy weiterhin; nur der Endpoin
 | Methode | Pfad | Beschreibung |
 |--------|------|--------------|
 | GET | `/health`, `/api/health` | Health-Check |
-| POST | `/api/claude` | Proxy zu Anthropic Claude (Body: `apiKey`, `payload`) |
+| POST | `/api/claude` | KI-Proxy (Body: `apiKey`, optional `provider`, `payload`) |
 | POST | `/api/pdf-text` | PDF aus Supabase Storage laden und Text extrahieren (Body: `storagePath`) |
 | POST | `/api/generate-flashcards` | Karteikarten aus Text generieren (Claude) |
 | POST | `/api/evaluate-answer` | Offene Antwort bewerten (Claude) |
 | POST | `/api/suggest-mcq-options` | MC-Optionen vorschlagen (Claude) |
 
-Der API-Key für Claude wird vom Frontend (aus dem Nutzerprofil) mitgeschickt (BYOK).
+Der API-Key wird vom Frontend (aus dem Nutzerprofil) mitgeschickt (BYOK). Unterstützte Provider im Proxy: `anthropic`, `openai`, `groq`, `openrouter`, `mistral`, `xai`.

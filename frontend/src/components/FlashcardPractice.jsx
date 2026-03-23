@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { getApiBase } from '../config'
 import { recordStreakActivity } from '../utils/streak'
+import { getUserAiConfig } from '../utils/aiProvider'
 
 // Anki-ähnlich: Intervall-Stufen in Tagen (falsch → 0, richtig → 1, 3, 7, 14, 30)
 const INTERVAL_STEPS = [0, 1, 3, 7, 14, 30]
@@ -57,12 +58,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
     setEvaluating(true)
     setEvaluation(null)
     try {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('claude_api_key_encrypted')
-        .eq('id', user.id)
-        .maybeSingle()
-      const apiKey = profile?.claude_api_key_encrypted
+      const { apiKey, provider } = await getUserAiConfig(user.id)
       if (!apiKey) {
         setEvaluation({ correct: false, feedback: 'Kein API-Key. Bitte in den Einstellungen eintragen.' })
         setEvaluating(false)
@@ -73,6 +69,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           apiKey,
+          provider,
           question: card.question,
           correctAnswer: card.answer,
           userAnswer: openAnswer.trim(),

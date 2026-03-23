@@ -62,6 +62,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
   const [showAddModal, setShowAddModal] = useState(false)
   const [learningTimeSeconds, setLearningTimeSeconds] = useState(0)
   const [learningTimeRefresh, setLearningTimeRefresh] = useState(0)
+  const [tutorRefresh, setTutorRefresh] = useState(0)
 
   useEffect(() => {
     if (!user?.id || !subject?.id) return
@@ -108,7 +109,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         user={user}
         subject={subject}
         material={activeLecture}
-        onBack={() => { setActiveLecture(null); setLearningTimeRefresh((r) => r + 1) }}
+        onBack={() => { setActiveLecture(null); setLearningTimeRefresh((r) => r + 1); setTutorRefresh((r) => r + 1) }}
       />
     )
   }
@@ -165,7 +166,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       <SubjectMaterials
         user={user}
         subject={subject}
-        refreshTrigger={flashcardRefresh}
+        refreshTrigger={flashcardRefresh + tutorRefresh}
         onOpenLecture={(material) => setActiveLecture(material)}
         onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
       />

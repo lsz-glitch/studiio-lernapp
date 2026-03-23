@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { getApiBase } from '../config'
+import { getUserAiConfig } from '../utils/aiProvider'
 
 const FORMAT_LABELS = {
   definition: 'Definitions-Abfrage',
@@ -16,14 +17,8 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
   const [error, setError] = useState('')
   const [step, setStep] = useState('form') // 'form' | 'generating' | 'done'
 
-  async function getApiKey() {
-    const { data, error: e } = await supabase
-      .from('profiles')
-      .select('claude_api_key_encrypted')
-      .eq('id', user.id)
-      .maybeSingle()
-    if (e || !data?.claude_api_key_encrypted) throw new Error('Kein Claude API Key. Bitte in den Einstellungen eintragen.')
-    return data.claude_api_key_encrypted
+  async function getAiConfig() {
+    return getUserAiConfig(user.id)
   }
 
   async function handleSubmit(e) {
@@ -32,11 +27,11 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
     setLoading(true)
     setStep('generating')
     try {
-      const apiKey = await getApiKey()
+      const { apiKey, provider } = await getAiConfig()
       const resText = await fetch(`${getApiBase()}/api/pdf-text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storagePath: material.storage_path }),
+        body: JSON.stringify({ materialId: material.id, storagePath: material.storage_path }),
       })
       const textData = await resText.json().catch(() => ({}))
       if (resText.status === 404 || (textData && textData.error === 'Route nicht gefunden')) {
@@ -54,6 +49,7 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           apiKey,
+          provider,
           subjectName: subject.name,
           materialFilename: material.filename,
           pdfText: pdfText.slice(0, 80000),
