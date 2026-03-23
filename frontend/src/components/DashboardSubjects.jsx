@@ -3,16 +3,11 @@ import { supabase } from '../supabaseClient'
 import SubjectProgressMini from './SubjectProgressMini'
 import LearningPlan from './LearningPlan'
 import { getStreak } from '../utils/streak'
+import { formatLearningTime, getTodayLearningTimeLocal } from '../utils/learningTime'
 
-function getCardStyle(pct) {
-  if (pct == null) {
-    return { backgroundColor: 'rgba(255,255,255,0.9)', borderColor: 'rgba(203, 198, 224, 0.6)' }
-  }
-  const hue = (pct / 100) * 120
-  return {
-    backgroundColor: `hsl(${hue}, 45%, 96%)`,
-    borderColor: `hsl(${hue}, 50%, 82%)`,
-  }
+function getAccentByIndex(index) {
+  const accents = ['#4fb4ad', '#e2ad4f', '#9fc7a3', '#df9a96', '#9ea8c2', '#88b6dc']
+  return accents[index % accents.length]
 }
 
 function formatCountdown(examDate) {
@@ -25,24 +20,63 @@ function formatCountdown(examDate) {
   const diffDays = Math.round((target.setHours(0, 0, 0, 0) - today.setHours(0, 0, 0, 0)) / oneDayMs)
 
   if (Number.isNaN(diffDays)) return 'Ungültiges Datum'
-  if (diffDays === 0) return 'Heute ist Klausurtag 💪'
+  if (diffDays === 0) return 'Heute ist Klausurtag'
   if (diffDays > 0) return `Noch ${diffDays} Tag${diffDays === 1 ? '' : 'e'}`
   const pastDays = Math.abs(diffDays)
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
-export default function DashboardSubjects({ user, onOpenSubject, onStartPractice, onOpenTutor }) {
+function normalizeSubjectName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('de-DE')
+}
+
+function getDisplayName(user) {
+  const metaName =
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.user_metadata?.display_name
+  if (metaName && String(metaName).trim()) return String(metaName).trim()
+  const email = user?.email || ''
+  const localPart = email.split('@')[0] || 'Lernende'
+  const clean = localPart.replace(/[._-]+/g, ' ').trim()
+  return clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : 'Lernende'
+}
+
+function getGreetingText() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Guten Morgen!'
+  return 'Guten Tag!'
+}
+
+export default function DashboardSubjects({
+  user,
+  onOpenSubject,
+  onStartPractice,
+  onOpenTutor,
+  onTodayPlannedChange,
+  showTopSection = true,
+  showLearningPlanSection = true,
+  showSubjectsSection = true,
+}) {
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [progressBySubject, setProgressBySubject] = useState({})
   const [streak, setStreak] = useState({ current_streak_days: 0, last_activity_date: null })
+  const [todayStats, setTodayStats] = useState({
+    planned: 0,
+    completed: 0,
+    learnedSeconds: 0,
+  })
+  const [todayCompletedTasks, setTodayCompletedTasks] = useState([])
 
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
   const [examDate, setExamDate] = useState('')
   const [saving, setSaving] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [manageMode, setManageMode] = useState(false)
 
   const [editingId, setEditingId] = useState(null)
   const [editName, setEditName] = useState('')
@@ -87,6 +121,76 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
     }
   }, [user.id])
 
+  useEffect(() => {
+    let mounted = true
+
+    function getTodayRangeUtc() {
+      const startLocal = new Date()
+      startLocal.setHours(0, 0, 0, 0)
+      const endLocal = new Date(startLocal)
+      endLocal.setDate(endLocal.getDate() + 1)
+      return {
+        startIso: startLocal.toISOString(),
+        endIso: endLocal.toISOString(),
+      }
+    }
+
+    async function loadTodayStats() {
+      const { startIso, endIso } = getTodayRangeUtc()
+      const { data, error: err } = await supabase
+        .from('learning_plan_tasks')
+        .select('id, completed_at')
+        .eq('user_id', user.id)
+        .gte('scheduled_at', startIso)
+        .lt('scheduled_at', endIso)
+
+      if (!mounted) return
+
+      if (err) {
+        console.error('Fehler beim Laden der Tages-Statistiken:', err)
+        setTodayStats((prev) => ({ ...prev, learnedSeconds: getTodayLearningTimeLocal() }))
+        return
+      }
+
+      const planned = (data || []).length
+      const completed = (data || []).filter((task) => !!task.completed_at).length
+      const learnedSeconds = getTodayLearningTimeLocal()
+      setTodayStats({ planned, completed, learnedSeconds })
+      if (onTodayPlannedChange) onTodayPlannedChange(planned)
+
+      const { data: completedToday, error: completedErr } = await supabase
+        .from('learning_plan_tasks')
+        .select('id, title, type, completed_at')
+        .eq('user_id', user.id)
+        .gte('completed_at', startIso)
+        .lt('completed_at', endIso)
+        .order('completed_at', { ascending: false })
+
+      if (!mounted) return
+      if (completedErr) {
+        console.error('Fehler beim Laden erledigter Tages-Tasks:', completedErr)
+        setTodayCompletedTasks([])
+      } else {
+        setTodayCompletedTasks(completedToday || [])
+      }
+    }
+
+    loadTodayStats()
+    const intervalId = window.setInterval(loadTodayStats, 30000)
+
+    return () => {
+      mounted = false
+      window.clearInterval(intervalId)
+    }
+  }, [user.id, onTodayPlannedChange])
+
+  function getTaskTypeLabel(type) {
+    if (type === 'tutor') return 'Tutor'
+    if (type === 'vocab') return 'Vokabeln'
+    if (type === 'exam') return 'Klausur'
+    return 'Task'
+  }
+
   const groupedSubjects = useMemo(() => {
     const groups = new Map()
     for (const subject of subjects) {
@@ -96,7 +200,6 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
     }
     return Array.from(groups.entries())
   }, [subjects])
-
   async function handleCreateSubject(e) {
     e.preventDefault()
     setError('')
@@ -133,6 +236,7 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   }
 
   function startEdit(subject) {
+    if (!manageMode) return
     setEditingId(subject.id)
     setEditName(subject.name || '')
     setEditGroup(subject.group_label || '')
@@ -147,6 +251,7 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   }
 
   function startDelete(subject) {
+    if (!manageMode) return
     setDeleteTarget(subject)
     setDeleteConfirmName('')
     setDeleteError('')
@@ -193,12 +298,12 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   }
 
   async function handleDeleteSubject(e) {
-    e.preventDefault()
+    if (e?.preventDefault) e.preventDefault()
     if (!deleteTarget) return
     setDeleteError('')
 
-    if (deleteConfirmName.trim() !== deleteTarget.name) {
-      setDeleteError('Der eingegebene Name passt nicht exakt zum Fachnamen.')
+    if (normalizeSubjectName(deleteConfirmName) !== normalizeSubjectName(deleteTarget.name)) {
+      setDeleteError('Der eingegebene Name passt nicht zum Fachnamen.')
       return
     }
 
@@ -223,53 +328,156 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-center sm:justify-start">
-        {streak.current_streak_days > 0 ? (
-          <div className="inline-flex items-center gap-2 rounded-2xl border-2 border-amber-300 bg-amber-50/90 px-5 py-3 shadow-sm">
-            <span className="text-2xl" aria-hidden>🔥</span>
-            <div>
-              <p className="text-sm font-semibold text-amber-800">
-                {streak.current_streak_days} {streak.current_streak_days === 1 ? 'Tag' : 'Tage'} Streak
-              </p>
-              <p className="text-xs text-amber-700/90">
-                Weiter so – tägliche Lernaktivität hält deinen Streak am Leben.
-              </p>
+      <section className="px-1">
+        {showTopSection && (
+          <>
+            <h2 className="text-5xl font-semibold tracking-tight text-[#26233c]" style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}>
+              {getGreetingText()}
+            </h2>
+            <p className="mt-2 text-2xl text-[#6c7388]">
+              Bereit für einen produktiven Tag, {getDisplayName(user)}?
+            </p>
+          </>
+        )}
+      </section>
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+          onClick={cancelDelete}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold text-red-800">Fach wirklich löschen?</h3>
+            <p className="mt-2 text-sm text-studiio-muted">
+              Zum Bestätigen gib bitte den Fachnamen ein:
+              <span className="font-semibold text-red-700"> {deleteTarget.name}</span>
+            </p>
+
+            <input
+              type="text"
+              value={deleteConfirmName}
+              onChange={(e) => setDeleteConfirmName(e.target.value)}
+              placeholder="Fachname eingeben"
+              className="studiio-input mt-3 w-full"
+            />
+
+            {deleteError && (
+              <p className="mt-2 text-xs text-red-700">{deleteError}</p>
+            )}
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelDelete}
+                className="rounded-md border border-studiio-lavender/70 px-3 py-1.5 text-sm font-medium text-studiio-muted hover:bg-studiio-lavender/30"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteSubject}
+                disabled={deleting || normalizeSubjectName(deleteConfirmName) !== normalizeSubjectName(deleteTarget.name)}
+                className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleting ? 'Löschen …' : 'Endgültig löschen'}
+              </button>
             </div>
           </div>
-        ) : (
-          <p className="text-sm text-studiio-muted">
-            🔥 Noch kein Streak – mach heute eine Lernaktivität (z. B. 1 Slide, 5 Vokabeln oder 1 Übung).
-          </p>
-        )}
-      </div>
+        </div>
+      )}
 
-      <LearningPlan
-        user={user}
-        subjects={subjects}
-        onOpenSubject={onOpenSubject}
-        onStartPractice={onStartPractice}
-        onOpenTutor={onOpenTutor}
-      />
+      {showLearningPlanSection && (
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <LearningPlan
+            user={user}
+            subjects={subjects}
+            onOpenSubject={onOpenSubject}
+            onStartPractice={onStartPractice}
+            onOpenTutor={onOpenTutor}
+          />
+          <aside className="rounded-2xl border border-white/30 bg-white/20 backdrop-blur-md p-4 shadow-[0_4px_12px_rgba(42,56,95,0.03)] h-fit">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xl font-semibold tracking-tight text-[#2f3150]">Heute erreicht</h3>
+              <span className="rounded-full bg-white/60 px-2.5 py-1 text-xs font-medium text-studiio-muted">
+                Tagesblick
+              </span>
+            </div>
 
-      <section className="space-y-3">
+            <div className="mt-3 space-y-2.5">
+              <div className="flex items-center justify-between rounded-lg bg-white/40 px-3 py-2">
+                <p className="text-sm text-studiio-muted">Erledigt</p>
+                <p className="text-lg font-semibold text-studiio-ink">{todayStats.completed}</p>
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-white/40 px-3 py-2">
+                <p className="text-sm text-studiio-muted">Gelernt</p>
+                <p className="text-lg font-semibold text-studiio-ink">{formatLearningTime(todayStats.learnedSeconds)}</p>
+              </div>
+              <div className="flex items-center justify-between rounded-lg bg-white/40 px-3 py-2">
+                <p className="text-sm text-studiio-muted">Streak</p>
+                <p className="text-lg font-semibold text-studiio-ink">
+                  {streak.current_streak_days} {streak.current_streak_days === 1 ? 'Tag' : 'Tage'}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <p className="text-xs uppercase tracking-wide text-studiio-muted font-semibold">
+                Heute abgeschlossene Aufgaben
+              </p>
+              {todayCompletedTasks.length === 0 ? (
+                <p className="mt-2 rounded-lg bg-white/35 px-3 py-2 text-sm text-studiio-muted">
+                  Heute noch keine Aufgabe abgeschlossen.
+                </p>
+              ) : (
+                <ul className="mt-2 space-y-2">
+                  {todayCompletedTasks.slice(0, 6).map((task) => (
+                    <li key={task.id} className="rounded-lg border border-white/50 bg-white/55 px-3 py-2">
+                      <p className="text-sm font-medium text-studiio-ink truncate">{task.title || getTaskTypeLabel(task.type)}</p>
+                      <p className="text-xs text-studiio-muted">{getTaskTypeLabel(task.type)}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </aside>
+        </section>
+      )}
+
+      {showSubjectsSection && (
+        <section className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-xl font-semibold text-studiio-ink">Deine Fächer</h2>
+            <h2 className="text-xl font-semibold text-studiio-ink">Meine Fächer</h2>
+            <p className="text-sm text-studiio-muted mt-0.5">
+              {subjects.length} {subjects.length === 1 ? 'Fach' : 'Fächer'} angelegt
+            </p>
           </div>
           <button
             type="button"
-            onClick={() => setShowCreateForm((v) => !v)}
-            className="inline-flex items-center gap-2 rounded-full bg-studiio-accent text-white px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-studiio-accentHover"
+            onClick={() => {
+              setManageMode((prev) => {
+                const next = !prev
+                if (!next) {
+                  cancelEdit()
+                  cancelDelete()
+                }
+                return next
+              })
+            }}
+            className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#7c6b9e] to-[#8b79af] text-white px-3 py-1.5 text-sm font-medium shadow-sm hover:brightness-95"
           >
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15 text-base leading-none">
-              +
+              {manageMode ? '×' : '✎'}
             </span>
             <span className="hidden sm:inline">
-              Neues Fach
+              {manageMode ? 'Bearbeiten beenden' : 'Fächer bearbeiten'}
             </span>
           </button>
         </div>
-        {showCreateForm && (
+        {manageMode && (
           <>
             <form
               onSubmit={handleCreateSubject}
@@ -329,53 +537,6 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
             )}
           </>
         )}
-      </section>
-
-      {deleteTarget && (
-        <section className="rounded-xl border border-red-200 bg-red-50/70 p-4 space-y-3">
-          <div>
-            <h3 className="text-sm font-semibold text-red-800">Fach löschen</h3>
-            <p className="text-sm text-red-700 mt-1">
-              Damit nichts aus Versehen gelöscht wird, gib bitte den exakten Namen ein:
-              <span className="font-semibold"> {deleteTarget.name}</span>
-            </p>
-          </div>
-
-          <form onSubmit={handleDeleteSubject} className="flex flex-col sm:flex-row gap-2 sm:items-center">
-            <input
-              type="text"
-              value={deleteConfirmName}
-              onChange={(e) => setDeleteConfirmName(e.target.value)}
-              placeholder="Fachname exakt eingeben"
-              className="studiio-input w-full sm:max-w-sm"
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={cancelDelete}
-                className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
-              >
-                Abbrechen
-              </button>
-              <button
-                type="submit"
-                disabled={deleting || deleteConfirmName.trim() !== deleteTarget.name}
-                className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {deleting ? 'Löschen …' : 'Endgültig löschen'}
-              </button>
-            </div>
-          </form>
-
-          {deleteError && (
-            <p className="text-sm text-red-700 bg-white border border-red-200 rounded-lg px-3 py-2">
-              {deleteError}
-            </p>
-          )}
-        </section>
-      )}
-
-      <section className="space-y-4">
         {loading ? (
           <p className="text-sm text-studiio-muted">Fächer werden geladen …</p>
         ) : subjects.length === 0 ? (
@@ -388,8 +549,8 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
               <h3 className="text-sm font-semibold text-studiio-muted mb-2">
                 {groupLabel === 'Ohne Zuordnung' ? 'Ohne Semester/Kategorie' : groupLabel}
               </h3>
-              <div className="grid gap-3 md:grid-cols-2">
-                {items.map((subject) =>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {items.map((subject, index) =>
                   editingId === subject.id ? (
                     <form
                       key={subject.id}
@@ -435,6 +596,13 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                       <div className="flex items-center justify-end gap-2 pt-1">
                         <button
                           type="button"
+                          onClick={() => startDelete(subject)}
+                          className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                        >
+                          Fach löschen
+                        </button>
+                        <button
+                          type="button"
                           onClick={cancelEdit}
                           className="rounded-lg border border-studiio-lavender/70 px-3 py-1.5 text-xs font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
                         >
@@ -452,28 +620,47 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                   ) : (
                     <article
                       key={subject.id}
-                      className="rounded-lg border-2 px-5 py-5 min-h-[140px] flex flex-col gap-2 cursor-pointer transition-colors hover:opacity-95"
-                      style={getCardStyle(progressBySubject[subject.id])}
+                      className="relative overflow-hidden rounded-2xl border bg-white px-5 py-5 min-h-[220px] flex flex-col gap-3 cursor-pointer shadow-sm transition-shadow hover:shadow-md"
+                      style={{
+                        borderColor: `${getAccentByIndex(index)}55`,
+                        backgroundColor: `${getAccentByIndex(index)}11`,
+                      }}
                       onClick={() => onOpenSubject && onOpenSubject(subject)}
                     >
+                      <span
+                        className="absolute left-0 top-0 h-full w-3 rounded-l-2xl"
+                        style={{ backgroundColor: getAccentByIndex(index) }}
+                        aria-hidden
+                      />
                       <div className="flex items-center justify-between gap-3">
-                        <h4 className="text-lg font-semibold text-studiio-ink">{subject.name}</h4>
-                        <span className="inline-flex items-center rounded px-2.5 py-1 text-sm font-medium text-studiio-ink bg-white/80">
-                          {formatCountdown(subject.exam_date)}
-                        </span>
+                        <h4 className="pl-1 text-[2rem] leading-[1.05] font-semibold tracking-tight text-studiio-ink" style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}>
+                          {subject.name}
+                        </h4>
+                        {subject.exam_date && (
+                          <span
+                            className="inline-flex items-center rounded-full px-3 py-1 text-sm font-medium"
+                            style={{
+                              backgroundColor: `${getAccentByIndex(index)}22`,
+                              color: '#3f3b36',
+                            }}
+                          >
+                            {formatCountdown(subject.exam_date)}
+                          </span>
+                        )}
                       </div>
-                      {subject.exam_date && (
-                        <p className="text-sm text-studiio-muted">
-                          Klausurtermin:&nbsp;
-                          {new Date(subject.exam_date).toLocaleDateString('de-DE')}
-                        </p>
-                      )}
+                      <p className="pl-1 text-base text-studiio-muted">
+                        {subject.exam_date ? (
+                          <>Klausur: {new Date(subject.exam_date).toLocaleDateString('de-DE')}</>
+                        ) : (
+                          'Kein Termin'
+                        )}
+                      </p>
                       <SubjectProgressMini
                         user={user}
                         subject={subject}
-                        onProgress={(id, pct) => setProgressBySubject((prev) => ({ ...prev, [id]: pct }))}
+                        accentColor={getAccentByIndex(index)}
                       />
-                      <div className="flex justify-end pt-2 gap-2 flex-wrap mt-auto">
+                      <div className="flex justify-start pt-2 gap-2 flex-wrap mt-auto">
                         {onStartPractice && (
                           <button
                             type="button"
@@ -481,31 +668,28 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                               e.stopPropagation()
                               onStartPractice(subject)
                             }}
-                            className="rounded-lg bg-studiio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studiio-accentHover"
+                            className="rounded-md px-3 py-1.5 text-sm font-medium text-white hover:brightness-95"
+                            style={{ backgroundColor: getAccentByIndex(index) }}
                           >
                             Vokabeln üben
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            startEdit(subject)
-                          }}
-                          className="rounded-lg border border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-accent hover:bg-studiio-sky/20"
-                        >
-                          Bearbeiten
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            startDelete(subject)
-                          }}
-                          className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-                        >
-                          Löschen
-                        </button>
+                        {manageMode && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              startEdit(subject)
+                            }}
+                            className="rounded-md border bg-white px-3 py-1.5 text-sm font-medium hover:bg-[#f8f8f6]"
+                            style={{
+                              borderColor: `${getAccentByIndex(index)}66`,
+                              color: '#3f3b36',
+                            }}
+                          >
+                            Bearbeiten
+                          </button>
+                        )}
                       </div>
                     </article>
                   ),
@@ -514,7 +698,8 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
             </div>
           ))
         )}
-      </section>
+        </section>
+      )}
     </div>
   )
 }

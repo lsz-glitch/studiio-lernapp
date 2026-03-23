@@ -16,7 +16,9 @@ import {
 export default function SettingsClaudeKey({ user }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [nameSaving, setNameSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [displayName, setDisplayName] = useState('')
   const [keyValue, setKeyValue] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -31,6 +33,17 @@ export default function SettingsClaudeKey({ user }) {
     { value: 'mistral', label: 'Mistral' },
     { value: 'xai', label: 'xAI (Grok)' },
   ]
+
+  function getInitialDisplayName() {
+    const metaName =
+      user?.user_metadata?.full_name ||
+      user?.user_metadata?.name ||
+      user?.user_metadata?.display_name
+    if (metaName && String(metaName).trim()) return String(metaName).trim()
+    const email = user?.email || ''
+    const localPart = email.split('@')[0] || ''
+    return localPart.replace(/[._-]+/g, ' ').trim()
+  }
 
   useEffect(() => {
     let isMounted = true
@@ -56,6 +69,7 @@ export default function SettingsClaudeKey({ user }) {
       }
 
       const cfg = parseStoredAiConfig(data?.claude_api_key_encrypted)
+      setDisplayName(getInitialDisplayName())
       if (cfg?.provider) setProvider(cfg.provider)
       if (cfg?.apiKey) {
         // Sicherheits-Hinweis: Wir zeigen den echten Key nicht im Klartext an.
@@ -71,6 +85,32 @@ export default function SettingsClaudeKey({ user }) {
       isMounted = false
     }
   }, [user.id])
+
+  async function handleSaveName(e) {
+    e.preventDefault()
+    setError('')
+    setMessage('')
+
+    const nextName = displayName.trim()
+    if (!nextName) {
+      setError('Bitte gib einen Namen ein.')
+      return
+    }
+
+    setNameSaving(true)
+    const { error: err } = await supabase.auth.updateUser({
+      data: { full_name: nextName },
+    })
+    setNameSaving(false)
+
+    if (err) {
+      console.error('Fehler beim Speichern des Namens:', err)
+      setError(`Name konnte nicht gespeichert werden: ${err.message || 'Bitte später erneut versuchen.'}`)
+      return
+    }
+
+    setMessage('Name wurde gespeichert.')
+  }
 
   async function handleSave(e) {
     e.preventDefault()
@@ -156,6 +196,38 @@ export default function SettingsClaudeKey({ user }) {
       )}
 
       <form onSubmit={handleSave} className="space-y-4 max-w-lg">
+        <div className="rounded-xl border border-studiio-lavender/40 bg-white p-4">
+          <h3 className="text-sm font-semibold text-studiio-ink mb-3">Profil</h3>
+          <div className="space-y-3">
+            <div>
+              <label htmlFor="display-name" className="block text-sm font-medium text-studiio-ink mb-1">
+                Dein Name
+              </label>
+              <input
+                id="display-name"
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="z. B. Lena"
+                className="studiio-input w-full"
+              />
+              <p className="mt-1 text-xs text-studiio-muted">
+                Dieser Name wird z. B. in deiner Begrüßung im Dashboard angezeigt.
+              </p>
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={handleSaveName}
+                disabled={nameSaving}
+                className="rounded-lg border border-studiio-lavender/70 px-4 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-60"
+              >
+                {nameSaving ? 'Wird gespeichert …' : 'Name speichern'}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div>
           <label htmlFor="ai-provider" className="block text-sm font-medium text-studiio-ink mb-1">
             KI Anbieter

@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import { recordStreakActivity } from '../utils/streak'
 import { addLearningTime } from '../utils/learningTime'
 import { completeTutorTasksForMaterial } from '../utils/learningPlan'
+import CompletionCelebration from './CompletionCelebration'
 import { getApiBase } from '../config'
 import { getUserAiConfig } from '../utils/aiProvider'
 
@@ -871,24 +872,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const pdfHeight = Math.round(pdfWidth * (4 / 3))
 
   if (isCompleted) {
+    const fileLabel =
+      material?.filename?.trim() ||
+      (isExerciseMode ? 'Übung/Tutorium' : 'Vorlesung')
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-studiio-cream p-6">
-        <div className="max-w-xl w-full rounded-2xl border border-studiio-lavender/50 bg-white p-8 text-center space-y-4 shadow-sm">
-          <h2 className="text-2xl font-semibold text-studiio-ink">
-            Toll, du hast diese {isExerciseMode ? 'Übung/Tutorium-Datei' : 'Vorlesung'} geschafft! 🎉
-          </h2>
-          <p className="text-studiio-muted">
-            Herzlichen Glückwunsch. Dein Fortschritt wurde gespeichert.
-          </p>
-          <button
-            type="button"
-            onClick={onBack}
-            className="studiio-btn-primary"
-          >
-            Zurück zum Fach
-          </button>
-        </div>
-      </div>
+      <CompletionCelebration
+        open
+        taskLabel={fileLabel}
+        subjectName={subject?.name || ''}
+        continueLabel="Zurück zum Fach"
+        onContinue={onBack}
+        onClose={onBack}
+      />
     )
   }
 

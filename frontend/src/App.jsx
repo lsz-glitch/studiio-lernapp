@@ -7,14 +7,33 @@ import DashboardSubjects from './components/DashboardSubjects'
 import SubjectDetail from './components/SubjectDetail'
 import './App.css'
 
+function getDisplayName(user) {
+  const metaName =
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.user_metadata?.display_name
+  if (metaName && String(metaName).trim()) return String(metaName).trim()
+
+  const email = user?.email || ''
+  const localPart = email.split('@')[0] || 'Lernende'
+  const clean = localPart.replace(/[._-]+/g, ' ').trim()
+  if (!clean) return 'Lernende'
+  return clean.charAt(0).toUpperCase() + clean.slice(1)
+}
+
+function getGreetingByHour() {
+  return new Date().getHours() < 12 ? 'Guten Morgen' : 'Guten Tag'
+}
+
 function App() {
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authMode, setAuthMode] = useState('login') // 'login' | 'register'
-  const [activeView, setActiveView] = useState('overview') // 'overview' | 'settings'
+  const [activeView, setActiveView] = useState('overview') // 'overview' | 'subjects' | 'settings'
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [openToPractice, setOpenToPractice] = useState(false)
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
+  const [todayPlannedTasks, setTodayPlannedTasks] = useState(0)
 
   useEffect(() => {
     if (!supabase) {
@@ -102,6 +121,22 @@ function App() {
     if (supabase) await supabase.auth.signOut()
   }
 
+  const isOverviewRoot = activeView === 'overview' && !selectedSubject
+  const headerTitle = activeView === 'settings'
+    ? 'Einstellungen'
+    : activeView === 'subjects'
+      ? 'Meine Fächer'
+    : isOverviewRoot
+      ? 'studiio'
+      : selectedSubject?.name || 'Dashboard'
+  const headerSubtitle = activeView === 'settings'
+    ? 'Verwalte dein Konto und deine API-Einstellungen.'
+    : activeView === 'subjects'
+      ? 'Du machst das großartig, ein Fach nach dem anderen.'
+    : isOverviewRoot
+      ? ''
+      : 'Deine Lernübersicht auf einen Blick.'
+
   if (!supabase) {
     return (
       <div className="min-h-screen bg-amber-50 text-gray-900 flex flex-col items-center justify-center px-6 py-12">
@@ -152,67 +187,95 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-studiio-cream text-studiio-ink">
-      <header className="studiio-header flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="studiio-logo">Studiio</h1>
-          <p className="text-studiio-muted text-sm">Lernen mit KI</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <nav className="flex items-center gap-2 text-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveView('overview')
-                setSelectedSubject(null)
-              }}
-              className={
-                activeView === 'overview'
-                  ? 'rounded-full bg-studiio-mint/70 px-3 py-1 font-medium text-studiio-ink'
-                  : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-studiio-mint/40'
-              }
-            >
-              Übersicht
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView('settings')}
-              className={
-                activeView === 'settings'
-                  ? 'rounded-full bg-studiio-lavender/70 px-3 py-1 font-medium text-studiio-ink'
-                  : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-studiio-lavender/40'
-              }
-            >
-              Einstellungen
-            </button>
-          </nav>
-          <span className="text-sm text-studiio-muted" title={user.email}>
-            {user.email}
-          </span>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="text-sm font-medium text-studiio-accent hover:underline"
-          >
-            Abmelden
-          </button>
-        </div>
-      </header>
-      <main className="studiio-main space-y-6">
-        {activeView === 'overview' && (
-          selectedSubject ? (
-            <SubjectDetail
-              user={user}
-              subject={selectedSubject}
-              onBack={() => setSelectedSubject(null)}
-              openToPractice={openToPractice}
-              onOpenToPracticeHandled={() => setOpenToPractice(false)}
-              openToTutorMaterialId={openToTutorMaterialId}
-              onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
-            />
-          ) : (
+    <div className="min-h-screen bg-gradient-to-b from-[#dff3eb] via-[#ece1fb] to-[#ddf4ea] text-studiio-ink">
+      <div className="w-full">
+        <header className="border-b border-[#e8ece9] bg-gradient-to-r from-[#ffffff]/95 via-[#f7fbff]/95 to-[#fff9ef]/95 px-4 py-4 md:px-8">
+          <div className="mx-auto flex w-full max-w-[1320px] flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 className={isOverviewRoot ? 'text-xl md:text-2xl font-semibold tracking-tight' : 'text-xl md:text-2xl font-semibold tracking-tight'}>
+                {headerTitle}
+              </h1>
+              {headerSubtitle && (
+                <p className="text-sm text-studiio-muted">
+                  {headerSubtitle}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveView('overview')
+                  setSelectedSubject(null)
+                }}
+                className={activeView === 'overview' ? 'rounded-full bg-[#cdeee8] px-3 py-1 font-medium text-[#245b55]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e9f4fb]'}
+              >
+                Hauptseite
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveView('subjects')
+                  setSelectedSubject(null)
+                }}
+                className={activeView === 'subjects' ? 'rounded-full bg-[#f4e5cb] px-3 py-1 font-medium text-[#6b4c15]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#f9f2e5]'}
+              >
+                Fächer
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveView('settings')}
+                className={activeView === 'settings' ? 'rounded-full bg-[#ece0f8] px-3 py-1 font-medium text-[#5f4b7a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#efe8fb]'}
+              >
+                Einstellungen
+              </button>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="rounded-full px-3 py-1 text-studiio-muted hover:bg-studiio-sky/20"
+                title={user.email}
+              >
+                Abmelden
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto w-full max-w-[1320px] px-4 py-6 md:px-8 md:py-8">
+          {activeView === 'overview' && (
+            selectedSubject ? (
+              <SubjectDetail
+                user={user}
+                subject={selectedSubject}
+                onBack={() => setSelectedSubject(null)}
+                openToPractice={openToPractice}
+                onOpenToPracticeHandled={() => setOpenToPractice(false)}
+                openToTutorMaterialId={openToTutorMaterialId}
+                onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
+              />
+            ) : (
+              <DashboardSubjects
+                user={user}
+                onTodayPlannedChange={setTodayPlannedTasks}
+                onOpenSubject={(subject) => setSelectedSubject(subject)}
+                onStartPractice={(subject) => {
+                  setSelectedSubject(subject)
+                  setOpenToPractice(true)
+                }}
+                onOpenTutor={(subject, materialId) => {
+                  setSelectedSubject(subject)
+                  setOpenToTutorMaterialId(materialId)
+                }}
+                showTopSection
+                showLearningPlanSection
+                showSubjectsSection={false}
+              />
+            )
+          )}
+          {activeView === 'subjects' && !selectedSubject && (
             <DashboardSubjects
               user={user}
+              onTodayPlannedChange={setTodayPlannedTasks}
               onOpenSubject={(subject) => setSelectedSubject(subject)}
               onStartPractice={(subject) => {
                 setSelectedSubject(subject)
@@ -222,11 +285,14 @@ function App() {
                 setSelectedSubject(subject)
                 setOpenToTutorMaterialId(materialId)
               }}
+              showTopSection={false}
+              showLearningPlanSection={false}
+              showSubjectsSection
             />
-          )
-        )}
-        {activeView === 'settings' && <SettingsClaudeKey user={user} />}
-      </main>
+          )}
+          {activeView === 'settings' && <SettingsClaudeKey user={user} />}
+        </main>
+      </div>
     </div>
   )
 }

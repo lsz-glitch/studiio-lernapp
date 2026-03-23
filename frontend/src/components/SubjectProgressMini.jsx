@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
 
-export default function SubjectProgressMini({ user, subject, onProgress }) {
+function withAlpha(hex, alphaHex) {
+  if (!hex || typeof hex !== 'string' || !hex.startsWith('#') || hex.length !== 7) return hex
+  return `${hex}${alphaHex}`
+}
+
+export default function SubjectProgressMini({ user, subject, onProgress, accentColor = '#4fb4ad' }) {
   const [materialsTotal, setMaterialsTotal] = useState(0)
   const [materialsDone, setMaterialsDone] = useState(0)
   const [cardsTotal, setCardsTotal] = useState(0)
@@ -76,18 +81,43 @@ export default function SubjectProgressMini({ user, subject, onProgress }) {
 
   if (!materialsTotal && !cardsTotal) {
     return (
-      <p className="text-xs text-studiio-muted">
-        Noch kein Fortschritt erfasst.
-      </p>
+      <p className="text-xs text-studiio-muted">Noch kein Fortschritt erfasst</p>
     )
   }
 
   return (
-    <p className="text-xs text-studiio-muted">
-      Unterlagen: <span className="font-semibold text-studiio-ink">{matPct}%</span>
-      {' · '}
-      Vokabeln: <span className="font-semibold text-studiio-ink">{cardPct}%</span>
-    </p>
+    <div className="space-y-2">
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="font-medium text-studiio-ink">Unterlagen</span>
+          <span className="text-studiio-muted">{matPct}%</span>
+        </div>
+        <div className="h-2 rounded-full bg-[#eef0ec]">
+          <div
+            className="h-2 rounded-full transition-all"
+            style={{
+              backgroundColor: accentColor,
+              width: `${Math.max(0, Math.min(100, matPct ?? 0))}%`,
+            }}
+          />
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 flex items-center justify-between text-xs">
+          <span className="font-medium text-studiio-ink">Vokabeln</span>
+          <span className="text-studiio-muted">{cardPct}%</span>
+        </div>
+        <div className="h-2 rounded-full bg-[#eef0ec]">
+          <div
+            className="h-2 rounded-full transition-all"
+            style={{
+              backgroundColor: withAlpha(accentColor, '99'),
+              width: `${Math.max(0, Math.min(100, cardPct ?? 0))}%`,
+            }}
+          />
+        </div>
+      </div>
+    </div>
   )
 }
 

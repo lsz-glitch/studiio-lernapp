@@ -5,6 +5,12 @@
 import { supabase } from '../supabaseClient'
 
 const TABLE = 'user_learning_time'
+const DAILY_SECONDS_PREFIX = 'studiio_daily_learning_seconds_'
+
+function getTodayLocalKey() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 /**
  * Lernzeit hinzufügen (nur addieren, nie zurücksetzen).
@@ -12,6 +18,15 @@ const TABLE = 'user_learning_time'
  */
 export async function addLearningTime(userId, subjectId, secondsToAdd) {
   if (!userId || !subjectId || secondsToAdd <= 0) return
+  const roundedSeconds = Math.round(secondsToAdd)
+
+  // Zusätzlich lokal den Tageswert führen, damit das Dashboard "heute gelernt" zeigen kann.
+  if (typeof window !== 'undefined') {
+    const key = `${DAILY_SECONDS_PREFIX}${getTodayLocalKey()}`
+    const currentDaily = Number(window.localStorage.getItem(key) || 0)
+    window.localStorage.setItem(key, String(currentDaily + roundedSeconds))
+  }
+
   const { data: row, error: fetchErr } = await supabase
     .from(TABLE)
     .select('total_seconds')
@@ -25,7 +40,7 @@ export async function addLearningTime(userId, subjectId, secondsToAdd) {
   }
 
   const current = Number(row?.total_seconds ?? 0)
-  const newTotal = current + Math.round(secondsToAdd) // immer nur addieren, nie zurücksetzen
+  const newTotal = current + roundedSeconds // immer nur addieren, nie zurücksetzen
 
   const { error: upsertErr } = await supabase
     .from(TABLE)
@@ -70,4 +85,13 @@ export function formatLearningTime(totalSeconds) {
   if (hours > 0 && minutes > 0) return `${hours} h ${minutes} min`
   if (hours > 0) return `${hours} h`
   return `${minutes} min`
+}
+
+/**
+ * Tages-Lernzeit aus lokalem Speicher (nur für Dashboard-Widget "heute gelernt").
+ */
+export function getTodayLearningTimeLocal() {
+  if (typeof window === 'undefined') return 0
+  const key = `${DAILY_SECONDS_PREFIX}${getTodayLocalKey()}`
+  return Number(window.localStorage.getItem(key) || 0)
 }
