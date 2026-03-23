@@ -49,6 +49,10 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
   const [editGroup, setEditGroup] = useState('')
   const [editExamDate, setEditExamDate] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     let isMounted = true
@@ -142,6 +146,18 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
     setEditExamDate('')
   }
 
+  function startDelete(subject) {
+    setDeleteTarget(subject)
+    setDeleteConfirmName('')
+    setDeleteError('')
+  }
+
+  function cancelDelete() {
+    setDeleteTarget(null)
+    setDeleteConfirmName('')
+    setDeleteError('')
+  }
+
   async function handleUpdateSubject(e) {
     e.preventDefault()
     if (!editingId) return
@@ -174,6 +190,35 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
 
     setSubjects((prev) => prev.map((s) => (s.id === data.id ? data : s)))
     cancelEdit()
+  }
+
+  async function handleDeleteSubject(e) {
+    e.preventDefault()
+    if (!deleteTarget) return
+    setDeleteError('')
+
+    if (deleteConfirmName.trim() !== deleteTarget.name) {
+      setDeleteError('Der eingegebene Name passt nicht exakt zum Fachnamen.')
+      return
+    }
+
+    setDeleting(true)
+    const { error: err } = await supabase
+      .from('subjects')
+      .delete()
+      .eq('id', deleteTarget.id)
+      .eq('user_id', user.id)
+
+    setDeleting(false)
+
+    if (err) {
+      console.error('Fehler beim Löschen eines Fachs:', err)
+      setDeleteError(`Fach konnte nicht gelöscht werden: ${err.message || 'Bitte später erneut versuchen.'}`)
+      return
+    }
+
+    setSubjects((prev) => prev.filter((s) => s.id !== deleteTarget.id))
+    cancelDelete()
   }
 
   return (
@@ -285,6 +330,50 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
           </>
         )}
       </section>
+
+      {deleteTarget && (
+        <section className="rounded-xl border border-red-200 bg-red-50/70 p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-red-800">Fach löschen</h3>
+            <p className="text-sm text-red-700 mt-1">
+              Damit nichts aus Versehen gelöscht wird, gib bitte den exakten Namen ein:
+              <span className="font-semibold"> {deleteTarget.name}</span>
+            </p>
+          </div>
+
+          <form onSubmit={handleDeleteSubject} className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <input
+              type="text"
+              value={deleteConfirmName}
+              onChange={(e) => setDeleteConfirmName(e.target.value)}
+              placeholder="Fachname exakt eingeben"
+              className="studiio-input w-full sm:max-w-sm"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={cancelDelete}
+                className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="submit"
+                disabled={deleting || deleteConfirmName.trim() !== deleteTarget.name}
+                className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleting ? 'Löschen …' : 'Endgültig löschen'}
+              </button>
+            </div>
+          </form>
+
+          {deleteError && (
+            <p className="text-sm text-red-700 bg-white border border-red-200 rounded-lg px-3 py-2">
+              {deleteError}
+            </p>
+          )}
+        </section>
+      )}
 
       <section className="space-y-4">
         {loading ? (
@@ -406,6 +495,16 @@ export default function DashboardSubjects({ user, onOpenSubject, onStartPractice
                           className="rounded-lg border border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-accent hover:bg-studiio-sky/20"
                         >
                           Bearbeiten
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            startDelete(subject)
+                          }}
+                          className="rounded-lg border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                        >
+                          Löschen
                         </button>
                       </div>
                     </article>
