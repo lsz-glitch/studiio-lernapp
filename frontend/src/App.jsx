@@ -242,36 +242,34 @@ function App() {
         </header>
 
         <main className="mx-auto w-full max-w-[1320px] px-4 py-6 md:px-8 md:py-8">
-          {activeView === 'overview' && (
-            selectedSubject ? (
-              <SubjectDetail
-                user={user}
-                subject={selectedSubject}
-                onBack={() => setSelectedSubject(null)}
-                openToPractice={openToPractice}
-                onOpenToPracticeHandled={() => setOpenToPractice(false)}
-                openToTutorMaterialId={openToTutorMaterialId}
-                onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
-              />
-            ) : (
-              <DashboardSubjects
-                user={user}
-                onTodayPlannedChange={setTodayPlannedTasks}
-                onOpenSubject={(subject) => setSelectedSubject(subject)}
-                onStartPractice={(subject) => {
-                  setSelectedSubject(subject)
-                  setOpenToPractice(true)
-                }}
-                onOpenTutor={(subject, materialId) => {
-                  setSelectedSubject(subject)
-                  setOpenToTutorMaterialId(materialId)
-                }}
-                showTopSection
-                showLearningPlanSection
-                showSubjectsSection={false}
-              />
-            )
-          )}
+          {selectedSubject ? (
+            <SubjectDetail
+              user={user}
+              subject={selectedSubject}
+              onBack={() => setSelectedSubject(null)}
+              openToPractice={openToPractice}
+              onOpenToPracticeHandled={() => setOpenToPractice(false)}
+              openToTutorMaterialId={openToTutorMaterialId}
+              onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
+            />
+          ) : activeView === 'overview' ? (
+            <DashboardSubjects
+              user={user}
+              onTodayPlannedChange={setTodayPlannedTasks}
+              onOpenSubject={(subject) => setSelectedSubject(subject)}
+              onStartPractice={(subject) => {
+                setSelectedSubject(subject)
+                setOpenToPractice(true)
+              }}
+              onOpenTutor={(subject, materialId) => {
+                setSelectedSubject(subject)
+                setOpenToTutorMaterialId(materialId)
+              }}
+              showTopSection
+              showLearningPlanSection
+              showSubjectsSection={false}
+            />
+          ) : null}
           {activeView === 'subjects' && !selectedSubject && (
             <DashboardSubjects
               user={user}
