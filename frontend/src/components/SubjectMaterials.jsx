@@ -43,19 +43,13 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
 
-      const { data: sizeRows, error: sizeErr } = await supabase
-        .from('materials')
-        .select('size_bytes')
-        .eq('user_id', user.id)
-        .is('deleted_at', null)
-
       if (!isMounted) return
 
-      if (err || sizeErr) {
-        console.error('Fehler beim Laden der Materialien:', err || sizeErr)
+      if (err) {
+        console.error('Fehler beim Laden der Materialien:', err)
         setError(
           `Dateien konnten nicht geladen werden: ${
-            (err || sizeErr)?.message || 'Bitte prüfe die Tabelle \"materials\" und den Storage-Bucket in Supabase.'
+            err?.message || 'Bitte prüfe die Tabelle \"materials\" und den Storage-Bucket in Supabase.'
           }`,
         )
         setLoading(false)
@@ -63,8 +57,6 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       }
 
       setMaterials(data || [])
-      const sumBytes = (sizeRows || []).reduce((sum, row) => sum + (row.size_bytes || 0), 0)
-      setTotalBytes(sumBytes)
       setLoading(false)
     }
 
@@ -73,6 +65,23 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       isMounted = false
     }
   }, [user.id, subject.id])
+
+  // Gesamtgröße nur laden, wenn Upload-Bereich sichtbar ist (deutlich leichter beim Öffnen eines Fachs).
+  useEffect(() => {
+    if (!showUploadForm) return
+    let mounted = true
+    ;(async () => {
+      const { data: sizeRows, error: sizeErr } = await supabase
+        .from('materials')
+        .select('size_bytes')
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+      if (!mounted || sizeErr) return
+      const sumBytes = (sizeRows || []).reduce((sum, row) => sum + (row.size_bytes || 0), 0)
+      setTotalBytes(sumBytes)
+    })()
+    return () => { mounted = false }
+  }, [showUploadForm, user.id])
 
   // Pro Datei nur einmal KI-Vokabeln: welche Materialien haben bereits Karten?
   useEffect(() => {

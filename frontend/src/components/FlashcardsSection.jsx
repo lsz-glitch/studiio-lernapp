@@ -19,7 +19,7 @@ export default function FlashcardsSection({ user, subject, refreshTrigger, onSta
     setLoading(true)
     supabase
       .from('flashcards')
-      .select('id, format, question, answer, options, position')
+      .select('id, format, question, answer, options, position, next_review_at')
       .eq('user_id', user.id)
       .eq('subject_id', subject.id)
       .order('position', { ascending: true })
@@ -38,38 +38,19 @@ export default function FlashcardsSection({ user, subject, refreshTrigger, onSta
     return () => { mounted = false }
   }, [user?.id, subject?.id, refreshTrigger, addModalRefresh])
 
-  // Bewertungen laden: „noch zu üben“ = nie geübt oder letzte Antwort war falsch
+  // Leichte Berechnung: zu üben = überfällig oder ohne next_review_at.
+  // Vermeidet große flashcard_reviews-Abfragen beim Öffnen eines Fachs.
   useEffect(() => {
-    if (!user?.id || cards.length === 0) {
+    if (cards.length === 0) {
       setToPracticeCount(cards.length)
       return
     }
-    const cardIds = cards.map((c) => c.id)
-    let mounted = true
-    supabase
-      .from('flashcard_reviews')
-      .select('flashcard_id, correct, created_at')
-      .eq('user_id', user.id)
-      .in('flashcard_id', cardIds)
-      .order('created_at', { ascending: false })
-      .then(({ data: reviews, error: e }) => {
-        if (!mounted) return
-        if (e) {
-          setToPracticeCount(cards.length)
-          return
-        }
-        // Pro Karte die letzte Bewertung (erster Treffer wegen order created_at desc)
-        const latestByCard = {}
-        for (const r of reviews || []) {
-          if (latestByCard[r.flashcard_id] == null) latestByCard[r.flashcard_id] = r
-        }
-        const needPractice = cards.filter(
-          (c) => !latestByCard[c.id] || latestByCard[c.id].correct === false
-        ).length
-        setToPracticeCount(needPractice)
-      })
-    return () => { mounted = false }
-  }, [user?.id, cards, refreshTrigger])
+    const nowIso = new Date().toISOString()
+    const needPractice = cards.filter(
+      (c) => !c.next_review_at || c.next_review_at <= nowIso,
+    ).length
+    setToPracticeCount(needPractice)
+  }, [cards])
 
   if (loading) return <p className="text-sm text-studiio-muted">Vokabeln werden geladen …</p>
   if (error) return <p className="text-sm text-red-600">{error}</p>

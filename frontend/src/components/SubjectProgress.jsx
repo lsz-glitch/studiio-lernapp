@@ -27,7 +27,7 @@ export default function SubjectProgress({ user, subject, refreshTrigger }) {
 
         const { data: flashcardsData, error: fcErr } = await supabase
           .from('flashcards')
-          .select('id, material_id')
+          .select('id, material_id, interval_days')
           .eq('user_id', user.id)
           .eq('subject_id', subject.id)
         if (fcErr) throw fcErr
@@ -36,19 +36,10 @@ export default function SubjectProgress({ user, subject, refreshTrigger }) {
         const materialIdsWithCards = new Set(cards.map((c) => c.material_id).filter(Boolean))
         setMaterialsDone(materialIdsWithCards.size)
 
-        if (cards.length === 0) {
-          setCardsLearned(0)
-          return
-        }
-        const cardIds = cards.map((c) => c.id)
-        const { data: reviews } = await supabase
-          .from('flashcard_reviews')
-          .select('flashcard_id')
-          .eq('user_id', user.id)
-          .eq('correct', true)
-          .in('flashcard_id', cardIds)
-        const learnedIds = new Set((reviews || []).map((r) => r.flashcard_id))
-        setCardsLearned(learnedIds.size)
+        // Schnellere Heuristik: gelernt, sobald Intervall > 0 ist.
+        // Spart große Review-Abfragen beim Öffnen eines Fachs.
+        const learnedCount = cards.filter((c) => Number(c.interval_days || 0) > 0).length
+        setCardsLearned(learnedCount)
       } catch (e) {
         if (mounted) setError(e.message || 'Fortschritt konnte nicht geladen werden.')
       } finally {
