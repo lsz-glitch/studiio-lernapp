@@ -328,6 +328,14 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     if (!error && data) setTasks((prev) => prev.map((x) => (x.id === task.id ? data : x)))
   }
 
+  function handleTaskCardClick(task) {
+    if (showForm) {
+      startEdit(task)
+      return
+    }
+    handleToggle(task)
+  }
+
   return (
     <section className="rounded-3xl border border-white/40 bg-white/65 p-6 shadow-[0_18px_35px_rgba(57,67,105,0.12)] backdrop-blur-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
@@ -482,19 +490,19 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
               const linkedSubject = resolveSubjectForTask(task)
               const isDragging = draggingTaskId === task.id
               const accentClass = getTaskAccent(task.type)
-              const compactWrapper = `group rounded-xl border bg-white shadow-sm p-2.5 cursor-grab active:cursor-grabbing transition ${
+              const compactWrapper = `group rounded-xl border bg-white shadow-sm p-2.5 transition ${
                 done ? 'border-emerald-200 bg-emerald-50/40' : 'border-studiio-lavender/40'
-              } ${isDragging ? 'opacity-50' : ''}`
+              } ${isDragging ? 'opacity-50' : ''} ${showForm ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}`
               return (
                 <li
                   key={task.id}
-                  draggable
+                  draggable={!showForm}
                   onDragStart={(e) => handleDragStart(e, task)}
                   onDragEnd={handleDragEnd}
-                  onClick={() => handleToggle(task)}
+                  onClick={() => handleTaskCardClick(task)}
                   className={
                     weekView === 'timeline'
-                      ? `rounded-lg border border-studiio-lavender/30 bg-white px-2 py-2 ${isDragging ? 'opacity-50' : ''} cursor-pointer`
+                      ? `rounded-lg border border-studiio-lavender/30 bg-white px-2 py-2 ${isDragging ? 'opacity-50' : ''} ${showForm ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}`
                       : compactWrapper
                   }
                 >
@@ -511,12 +519,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                       <div className="flex items-start gap-2">
                         <span className={`mt-0.5 h-10 w-1.5 rounded-full ${accentClass}`} />
                         <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => startEdit(task)}
-                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEdit(task) } }}
-                          className="min-w-0 flex-1 cursor-pointer"
-                          aria-label="Task bearbeiten"
+                          className="min-w-0 flex-1"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <p className={`truncate text-sm font-semibold text-studiio-ink ${done ? 'line-through opacity-70' : ''}`}>{getTaskTitle(task)}</p>
@@ -524,7 +527,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                           <p className="mt-0.5 text-[11px] text-studiio-muted">{formatTaskTime(task.scheduled_at)}</p>
                         </div>
                       </div>
-                      {!done && linkedSubject && weekView === 'extended' && (
+                      {!showForm && !done && linkedSubject && weekView === 'extended' && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-3.5" onClick={(e) => e.stopPropagation()}>
                           {task.material_id && onOpenTutor ? (
                             <button

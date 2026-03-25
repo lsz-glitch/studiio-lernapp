@@ -12,11 +12,29 @@ const FORMAT_LABELS = {
 }
 
 export default function FlashcardCreateModal({ user, subject, material, onClose, onSuccess }) {
-  const [focusAttention, setFocusAttention] = useState('')
-  const [focusTheme, setFocusTheme] = useState('')
+  const [focusInput, setFocusInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [step, setStep] = useState('form') // 'form' | 'generating' | 'done'
+
+  const preferenceText = `${focusInput}`.toLowerCase()
+  const wantsSingle = /\bsingle\s*choice\b|\bsingle_choice\b/.test(preferenceText)
+  const wantsMultiple = /\bmultiple\s*choice\b|\bmultiple_choice\b|\bmcq\b/.test(preferenceText)
+  const wantsOpen = /\boffen(es|e|er)?\b|\bopen\b|\bfreitext\b/.test(preferenceText)
+  const wantsDefinition = /\bdefinition\b/.test(preferenceText)
+  const requestedFormats = [wantsSingle, wantsMultiple, wantsOpen, wantsDefinition].filter(Boolean).length
+  const hasStrictFormatRequest = requestedFormats === 1
+  const requestedFormat = hasStrictFormatRequest
+    ? (wantsSingle
+        ? 'single_choice'
+        : wantsMultiple
+          ? 'multiple_choice'
+          : wantsOpen
+            ? 'open'
+            : 'definition')
+    : null
+  const hasVerbatimRequest =
+    /\b1:1\b|\beins\s*zu\s*eins\b|\bidentisch\b|\bwortw(ö|oe)rtlich\b/.test(preferenceText)
 
   async function getAiConfig() {
     return getUserAiConfig(user.id)
@@ -67,8 +85,10 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
           subjectName: subject.name,
           materialFilename: material.filename,
           pdfText: pdfText.slice(0, 80000),
-          focusAttention: focusAttention.trim() || undefined,
-          focusTheme: focusTheme.trim() || undefined,
+          focusAttention: focusInput.trim() || undefined,
+          focusTheme: undefined,
+          forceFormat: requestedFormat || undefined,
+          verbatimMode: hasVerbatimRequest || undefined,
         }),
       })
       const rawGen = await resGen.text()
@@ -92,7 +112,12 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
       }
       if (!resGen.ok) throw new Error(genData.error || genData.details || 'Generierung fehlgeschlagen.')
       const cards = genData.cards || []
-      if (cards.length === 0) throw new Error('Es wurden keine Karten erzeugt.')
+      if (cards.length === 0) {
+        throw new Error(
+          'Es wurden 0 Karten zurückgegeben. Bitte API-Server neu starten (npm run api) und erneut versuchen. ' +
+          'Falls du 1:1 verlangst, Prompt etwas konkreter machen (z. B. Seitenbereich/Anzahl).',
+        )
+      }
 
       const rows = cards.map((c, i) => ({
         user_id: user.id,
@@ -102,6 +127,7 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
         question: c.question,
         answer: c.answer,
         options: c.options || null,
+        general_explanation: c.general_explanation || null,
         position: i,
       }))
       const { error: insertErr } = await supabase.from('flashcards').insert(rows)
@@ -142,29 +168,19 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
                 Worauf soll geachtet werden?
               </label>
               <textarea
-                value={focusAttention}
-                onChange={(e) => setFocusAttention(e.target.value)}
-                placeholder="z.B. Definitionen, Formeln, zentrale Begriffe …"
+                value={focusInput}
+                onChange={(e) => setFocusInput(e.target.value)}
+                placeholder="z. B. Definitionen, Formeln, zentrale Begriffe, 1:1 übernehmen, nur Single Choice …"
                 className="w-full rounded-lg border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink placeholder:text-studiio-muted/70 focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
-                rows={2}
-                disabled={loading}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-studiio-ink mb-1">
-                Möchtest du einen Fokus setzen?
-              </label>
-              <textarea
-                value={focusTheme}
-                onChange={(e) => setFocusTheme(e.target.value)}
-                placeholder="z.B. nur Kapitel 3, oder Schwerpunkt Prüfungsrelevanz …"
-                className="w-full rounded-lg border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink placeholder:text-studiio-muted/70 focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
-                rows={2}
+                rows={3}
                 disabled={loading}
               />
             </div>
             <p className="text-xs text-studiio-muted">
-              Es werden Karten in allen Formaten erzeugt (Definitions-Abfrage, Offenes Antwortfeld, Multiple Choice, Single Choice). Alle Inhalte der Datei werden abgedeckt.
+              {hasStrictFormatRequest
+                ? 'Dein gewünschtes Format wird strikt übernommen.'
+                : 'Ohne Formatvorgabe werden Karten in mehreren Formaten erzeugt.'}
+              {hasVerbatimRequest ? ' Dein 1:1-Wunsch wird ebenfalls berücksichtigt.' : ''}
             </p>
             {error && (
               <p className="text-sm text-red-600">{error}</p>

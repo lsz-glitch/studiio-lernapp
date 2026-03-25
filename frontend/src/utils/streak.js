@@ -25,7 +25,7 @@ function getYesterdayLocal() {
  * Mehrfach pro Tag: nur erste Aktivität zählt (idempotent).
  */
 export async function recordStreakActivity(userId) {
-  if (!userId) return
+  if (!userId) return false
   const today = getTodayLocal()
   const yesterday = getYesterdayLocal()
 
@@ -37,7 +37,7 @@ export async function recordStreakActivity(userId) {
 
   if (fetchErr) {
     console.error('Streak: Laden fehlgeschlagen', fetchErr)
-    return
+    return false
   }
 
   const last = row?.last_activity_date != null ? String(row.last_activity_date).slice(0, 10) : null
@@ -47,7 +47,7 @@ export async function recordStreakActivity(userId) {
   if (!last) {
     newStreak = 1
   } else if (last === today) {
-    return
+    return true
   } else if (last === yesterday) {
     newStreak = current + 1
   } else {
@@ -61,7 +61,11 @@ export async function recordStreakActivity(userId) {
       { onConflict: 'user_id' }
     )
 
-  if (upsertErr) console.error('Streak: Speichern fehlgeschlagen', upsertErr)
+  if (upsertErr) {
+    console.error('Streak: Speichern fehlgeschlagen', upsertErr)
+    return false
+  }
+  return true
 }
 
 /**

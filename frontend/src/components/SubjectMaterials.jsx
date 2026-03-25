@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import FlashcardEditModal from './FlashcardEditModal'
+import { FORMAT_LABELS } from './FlashcardCreateModal'
 
 const MAX_STORAGE_PER_USER_BYTES = 20 * 1024 * 1024 // 20 MB
 
@@ -11,7 +13,16 @@ const CATEGORY_OPTIONS = [
   'Zusatzmaterialien',
 ]
 
-export default function SubjectMaterials({ user, subject, refreshTrigger, onOpenLecture, onOpenFlashcardCreate }) {
+function getCategoryHeaderClasses(category) {
+  const c = String(category || '').toLowerCase()
+  if (c.includes('vorlesung')) return 'bg-[#e8eefc] border-[#c9d8f7]'
+  if (c.includes('übung') || c.includes('uebung') || c.includes('tutorium')) return 'bg-[#e7f7ef] border-[#bfead3]'
+  if (c.includes('probe')) return 'bg-[#fff2e5] border-[#ffd8b8]'
+  if (c.includes('zusatz')) return 'bg-[#f3edff] border-[#dbccff]'
+  return 'bg-white/70 border-studiio-lavender/40'
+}
+
+export default function SubjectMaterials({ user, subject, refreshTrigger, onOpenLecture, onOpenFlashcardCreate, onStartPractice }) {
   const [materials, setMaterials] = useState([])
   const [materialIdsWithGeneratedCards, setMaterialIdsWithGeneratedCards] = useState(new Set())
   const [loading, setLoading] = useState(true)
@@ -23,6 +34,10 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
   const [deletingMaterialId, setDeletingMaterialId] = useState(null)
   const [showUploadForm, setShowUploadForm] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [expandedCategories, setExpandedCategories] = useState({})
+  const [quickDraftCards, setQuickDraftCards] = useState([])
+  const [quickDraftExpanded, setQuickDraftExpanded] = useState(false)
+  const [editingDraftCard, setEditingDraftCard] = useState(null)
 
   const [totalBytes, setTotalBytes] = useState(0)
   const [completedTutorMaterialIds, setCompletedTutorMaterialIds] = useState(new Set())
@@ -83,6 +98,28 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     return () => { mounted = false }
   }, [showUploadForm, user.id])
 
+  useEffect(() => {
+    if (!subject?.id || !user?.id) return
+    let mounted = true
+    supabase
+      .from('flashcards')
+      .select('id, format, question, answer, is_draft, material_id, created_at')
+      .eq('user_id', user.id)
+      .eq('subject_id', subject.id)
+      .eq('is_draft', true)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (!mounted) return
+        if (error) {
+          console.error('Schnellkarteikarten konnten nicht geladen werden:', error)
+          setQuickDraftCards([])
+          return
+        }
+        setQuickDraftCards(data || [])
+      })
+    return () => { mounted = false }
+  }, [user?.id, subject?.id, refreshTrigger, deletingMaterialId])
+
   // Pro Datei nur einmal KI-Vokabeln: welche Materialien haben bereits Karten?
   useEffect(() => {
     if (!subject?.id || !user?.id) return
@@ -92,6 +129,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       .select('material_id')
       .eq('subject_id', subject.id)
       .eq('user_id', user.id)
+      .eq('is_draft', false)
       .not('material_id', 'is', null)
       .then(({ data }) => {
         if (!mounted) return
@@ -131,6 +169,16 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
     }
     return Array.from(groups.entries())
   }, [materials])
+
+  useEffect(() => {
+    // Kategorien standardmäßig eingeklappt halten, um lange Listen kompakt zu machen.
+    const next = {}
+    for (const [category] of groupedMaterials) {
+      next[category] = expandedCategories[category] ?? false
+    }
+    setExpandedCategories(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupedMaterials.length, subject?.id])
 
   function addFiles(files, replace = false) {
     const list = Array.from(files || []).filter((f) => f && f instanceof File)
@@ -285,12 +333,54 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
 
   async function handleDeleteMaterial(materialRow) {
     const ok = window.confirm(
-      `Datei wirklich aus diesem Fach entfernen?\n\n${materialRow.filename}\n\nHinweis: Der gespeicherte Folienkontext bleibt erhalten.`,
+      `Datei wirklich aus diesem Fach entfernen?\n\n${materialRow.filename}\n\nDanach kannst du entscheiden, ob verknüpfte Vokabeln mitgelöscht oder beibehalten werden.`,
     )
     if (!ok) return
     setDeletingMaterialId(materialRow.id)
     setError('')
     setInfo('')
+
+    // Option für verknüpfte Vokabeln
+    let linkedCardsCount = 0
+    const { count: linkedCount, error: countErr } = await supabase
+      .from('flashcards')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('subject_id', subject.id)
+      .eq('material_id', materialRow.id)
+    if (countErr) {
+      setError(`Vokabeln zur Datei konnten nicht geprüft werden: ${countErr.message}`)
+      setDeletingMaterialId(null)
+      return
+    }
+    linkedCardsCount = linkedCount || 0
+
+    let deleteLinkedCards = false
+    if (linkedCardsCount > 0) {
+      const choice = window.prompt(
+        `Zu dieser Datei gibt es ${linkedCardsCount} verknüpfte Vokabel${linkedCardsCount === 1 ? '' : 'n'}.\n\n` +
+        `Bitte auswählen:\n` +
+        `1 = Vokabeln und Folien\n` +
+        `2 = Nur Folien\n\n` +
+        `Hinweis: Der gespeicherte Folienkontext bleibt immer erhalten.`,
+        '2',
+      )
+      if (choice == null) {
+        setDeletingMaterialId(null)
+        return
+      }
+      const normalizedChoice = String(choice).trim()
+      if (normalizedChoice === '1') {
+        deleteLinkedCards = true
+      } else if (normalizedChoice === '2') {
+        deleteLinkedCards = false
+      } else {
+        setError('Ungültige Auswahl. Bitte erneut löschen und 1 oder 2 eingeben.')
+        setDeletingMaterialId(null)
+        return
+      }
+    }
+
     const { error: delErr } = await supabase
       .from('materials')
       .update({ deleted_at: new Date().toISOString() })
@@ -302,6 +392,35 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       )
       setDeletingMaterialId(null)
       return
+    }
+
+    if (linkedCardsCount > 0) {
+      if (deleteLinkedCards) {
+        const { error: deleteCardsErr } = await supabase
+          .from('flashcards')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('material_id', materialRow.id)
+        if (deleteCardsErr) {
+          setError(`Datei wurde gelöscht, aber verknüpfte Vokabeln nicht: ${deleteCardsErr.message}`)
+          setDeletingMaterialId(null)
+          return
+        }
+      } else {
+        // Vokabeln bleiben erhalten, verlieren aber die Datei-Zuordnung.
+        const { error: keepCardsErr } = await supabase
+          .from('flashcards')
+          .update({ material_id: null })
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('material_id', materialRow.id)
+        if (keepCardsErr) {
+          setError(`Datei wurde gelöscht, aber Vokabeln konnten nicht beibehalten werden: ${keepCardsErr.message}`)
+          setDeletingMaterialId(null)
+          return
+        }
+      }
     }
 
     setMaterials((prev) => prev.filter((x) => x.id !== materialRow.id))
@@ -316,15 +435,32 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       next.delete(materialRow.id)
       return next
     })
-    setInfo(`Datei entfernt: ${materialRow.filename}`)
+    if (linkedCardsCount > 0) {
+      setInfo(
+        deleteLinkedCards
+          ? `Datei entfernt inkl. ${linkedCardsCount} verknüpfter Vokabel${linkedCardsCount === 1 ? '' : 'n'}.`
+          : `Datei entfernt. ${linkedCardsCount} Vokabel${linkedCardsCount === 1 ? '' : 'n'} wurden beibehalten.`,
+      )
+    } else {
+      setInfo(`Datei entfernt: ${materialRow.filename}`)
+    }
     setDeletingMaterialId(null)
   }
 
   return (
-    <div className="mt-3 space-y-3 rounded-2xl border border-studiio-lavender/50 bg-studiio-sky/20 px-4 py-3">
+    <div className="mt-3 space-y-3 rounded-2xl border border-studiio-lavender/60 bg-white px-4 py-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h5 className="text-sm font-semibold text-studiio-ink">Dateien für dieses Fach</h5>
+        <h5 className="text-sm font-semibold text-studiio-ink">Materialien für dieses Fach</h5>
         <div className="flex flex-wrap items-center gap-2">
+          {onStartPractice && (
+            <button
+              type="button"
+              onClick={() => onStartPractice(null)}
+              className="rounded-full border border-studiio-lavender/70 bg-white px-3 py-1.5 text-xs font-medium text-studiio-ink hover:bg-studiio-sky/20"
+            >
+              Vokabeln üben
+            </button>
+          )}
           {showUploadForm && (
             <p className="text-xs text-studiio-muted">
               Speicher: {usedMb} / {maxMb} MB
@@ -429,7 +565,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
         </form>
       )}
 
-      <div className="border-t border-studiio-lavender/40 pt-2 mt-1">
+      <div>
         {loading ? (
           <p className="text-xs text-studiio-muted">Dateien werden geladen …</p>
         ) : materials.length === 0 ? (
@@ -438,9 +574,27 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
           </p>
         ) : (
           <div className="space-y-2">
-            {groupedMaterials.map(([category, items]) => (
+            {groupedMaterials.map(([category, items]) => {
+              const expanded = !!expandedCategories[category]
+              const vocabReadyCount = items.filter((m) => materialIdsWithGeneratedCards.has(m.id)).length
+              return (
               <div key={category}>
-                <h6 className="text-[11px] font-semibold text-studiio-muted mb-1">{category}</h6>
+                <button
+                  type="button"
+                  onClick={() => setExpandedCategories((prev) => ({ ...prev, [category]: !expanded }))}
+                  className={`mb-1 w-full flex items-center justify-between rounded-lg border px-3 py-1.5 text-left hover:brightness-[0.98] ${getCategoryHeaderClasses(category)}`}
+                >
+                  <div className="min-w-0">
+                    <h6 className="text-sm font-semibold text-studiio-ink">
+                      {category} <span className="font-normal">({items.length})</span>
+                    </h6>
+                    <p className="text-[11px] text-studiio-muted">
+                      Vokabeln: {vocabReadyCount}/{items.length} Dateien
+                    </p>
+                  </div>
+                  <span className="text-sm text-studiio-muted ml-2">{expanded ? '▾' : '▸'}</span>
+                </button>
+                {expanded && (
                 <ul className="space-y-1">
                   {items.map((m) => (
                     (() => {
@@ -450,72 +604,73 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                       return (
                     <li
                       key={m.id}
-                      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-1.5 ${
+                      className={`rounded-lg border px-2 py-1 ${
                         fullyDone
-                          ? 'bg-green-50 border border-green-200'
-                          : 'bg-white/80'
+                          ? 'bg-green-50 border-green-200'
+                          : 'bg-white/90 border-studiio-lavender/40'
                       }`}
                     >
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-studiio-ink truncate">
-                          {m.filename}
-                        </p>
-                        <p className="text-[11px] text-studiio-muted">
-                          {(m.size_bytes / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {onOpenFlashcardCreate && (
-                          materialIdsWithGeneratedCards.has(m.id) ? (
-                            <span className="text-[11px] text-studiio-muted" title="Bereits erstellt – Karten manuell hinzufügen möglich">
-                              Vokabeln erstellt
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onOpenFlashcardCreate(m)}
-                              className="text-[11px] font-medium text-studiio-muted hover:text-studiio-accent"
-                            >
-                              Vokabeln erstellen
-                            </button>
-                          )
-                        )}
-                        {['Vorlesung', 'Übung', 'Tutorium'].includes(m.category) && onOpenLecture && (
-                          <>
-                            {completedTutorMaterialIds.has(m.id) ? (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenTutor(m)}
-                                className="text-[11px] font-medium text-green-700 hover:underline"
-                                title="Bereits im Tutor durchgearbeitet – erneut starten"
-                              >
-                                Tutor erledigt
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenTutor(m)}
-                                className="text-[11px] font-medium text-studiio-accent hover:underline"
-                              >
-                                Im Tutor öffnen
-                              </button>
-                            )}
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-studiio-ink truncate">
+                            {m.filename}
+                          </p>
+                          <div className="mt-0.5 flex items-center gap-2">
+                            <p className="text-[10px] text-studiio-muted">
+                              {(m.size_bytes / (1024 * 1024)).toFixed(2)} MB
+                            </p>
                             {fullyDone && (
                               <span
-                                className="text-[11px] font-medium text-green-700"
+                                className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-medium text-green-700"
                                 title="Tutor abgeschlossen und Vokabeln erstellt"
                               >
                                 Vollständig
                               </span>
                             )}
-                          </>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center justify-end gap-2">
+                        {onOpenFlashcardCreate && (
+                          cardsDone ? (
+                            <button
+                              type="button"
+                              onClick={() => onStartPractice?.({ id: m.id, filename: m.filename })}
+                              className="inline-flex items-center justify-center rounded border border-studiio-lavender/60 px-2.5 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                            >
+                              Vokabeln üben
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFlashcardCreate(m)}
+                              className="rounded border border-studiio-lavender/60 px-2.5 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                            >
+                              Vokabeln erstellen
+                            </button>
+                          )
+                        )}
+                        {['Vorlesung', 'Übung', 'Tutorium', 'Zusatzmaterialien'].includes(m.category) && onOpenLecture && (
+                          tutorDone ? (
+                            <span className="rounded border border-green-300 px-2.5 py-1 text-[11px] font-medium text-green-700">
+                              Tutor abgeschlossen
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenTutor(m)}
+                              className="rounded border border-studiio-lavender/60 px-2.5 py-1 text-[11px] font-medium text-studiio-accent hover:bg-studiio-sky/20"
+                            >
+                              Im Tutor öffnen
+                            </button>
+                          )
                         )}
                         {showUploadForm && (
                           <button
                             type="button"
                             onClick={() => handleDeleteMaterial(m)}
                             disabled={deletingMaterialId === m.id}
-                            className="text-[11px] font-medium text-red-600 hover:underline disabled:opacity-50"
+                            className="rounded border border-red-200 px-2.5 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                           >
                             {deletingMaterialId === m.id ? 'Löscht …' : 'Löschen'}
                           </button>
@@ -526,11 +681,74 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                     })()
                   ))}
                 </ul>
+                )}
               </div>
-            ))}
+            )})}
+
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setQuickDraftExpanded((v) => !v)}
+                className="w-full flex items-center justify-between rounded-lg border border-[#dbccff] bg-[#f3edff] px-3 py-1.5 text-left hover:brightness-[0.98]"
+              >
+                <div>
+                  <h6 className="text-sm font-semibold text-studiio-ink">
+                    Schnellkarteikarten <span className="font-normal">({quickDraftCards.length})</span>
+                  </h6>
+                  <p className="text-[11px] text-studiio-muted">Entwürfe aus dem Schnellfragenmodus</p>
+                </div>
+                <span className="text-sm text-studiio-muted ml-2">{quickDraftExpanded ? '▾' : '▸'}</span>
+              </button>
+              {quickDraftExpanded && (
+                <ul className="mt-1 space-y-1">
+                  {quickDraftCards.length === 0 ? (
+                    <li className="rounded-lg border border-studiio-lavender/40 bg-white/85 px-3 py-2 text-xs text-studiio-muted">
+                      Noch keine Schnellkarteikarten vorhanden.
+                    </li>
+                  ) : (
+                    quickDraftCards.map((card) => (
+                      <li key={card.id} className="rounded-lg border border-studiio-lavender/40 bg-white/90 px-3 py-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-studiio-ink truncate">{card.question}</p>
+                          <p className="text-[11px] text-studiio-muted">
+                            {FORMAT_LABELS[card.format] || card.format} • {String(card.answer || '').trim() ? 'Antwort vorhanden' : 'Antwort offen'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditingDraftCard(card)}
+                          className="rounded border border-studiio-lavender/60 px-2.5 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                        >
+                          Bearbeiten
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </div>
+      {editingDraftCard && (
+        <FlashcardEditModal
+          user={user}
+          card={editingDraftCard}
+          onClose={() => setEditingDraftCard(null)}
+          onSuccess={(updated) => {
+            const currentId = editingDraftCard.id
+            setEditingDraftCard(null)
+            setQuickDraftCards((prev) => {
+              const next = prev.map((c) => (c.id === currentId ? { ...c, ...updated } : c))
+              return next.filter((c) => !!c.is_draft)
+            })
+          }}
+          onDelete={(deletedCard) => {
+            setQuickDraftCards((prev) => prev.filter((c) => c.id !== deletedCard.id))
+            setEditingDraftCard(null)
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -6,12 +6,14 @@ import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT
 import { getUserAiConfig } from '../utils/aiProvider'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
-export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
+export default function FlashcardEditModal({ user, card, onClose, onSuccess, onDelete }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState('')
   const [format, setFormat] = useState('definition')
+  const [isDraft, setIsDraft] = useState(false)
   const [optionsText, setOptionsText] = useState('')
   const [loading, setLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
   const [suggestLoading, setSuggestLoading] = useState(false)
 
@@ -20,6 +22,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
     setQuestion(card.question || '')
     setAnswer(card.answer || '')
     setFormat(card.format || 'definition')
+    setIsDraft(!!card.is_draft)
     const opts = Array.isArray(card.options) ? card.options : []
     setOptionsText(opts.join('\n'))
   }, [card])
@@ -87,15 +90,15 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
       setError('Bitte eine Frage eingeben.')
       return
     }
-    if (!answer.trim()) {
+    if (!isDraft && !answer.trim()) {
       setError('Bitte eine Antwort eingeben.')
       return
     }
-    if (isChoice && options.length < 2) {
+    if (!isDraft && isChoice && options.length < 2) {
       setError('Bei Multiple/Single Choice mindestens 2 Antwortmöglichkeiten eingeben (eine pro Zeile).')
       return
     }
-    if (isChoice && !options.includes(answer.trim())) {
+    if (!isDraft && isChoice && !options.includes(answer.trim())) {
       setError('Die richtige Antwort muss in den Antwortmöglichkeiten vorkommen.')
       return
     }
@@ -105,8 +108,9 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
       const update = {
         format,
         question: question.trim(),
-        answer: answer.trim(),
+        answer: answer.trim() || 'Antwort folgt',
         options: isChoice ? options : null,
+        is_draft: !!isDraft,
       }
       const { error: updateErr } = await supabase
         .from('flashcards')
@@ -119,6 +123,28 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
       setError(err.message || 'Ein Fehler ist aufgetreten.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!card?.id) return
+    const ok = window.confirm('Diese Karteikarte wirklich löschen?')
+    if (!ok) return
+    setDeleting(true)
+    setError('')
+    try {
+      const { error: delErr } = await supabase
+        .from('flashcards')
+        .delete()
+        .eq('id', card.id)
+        .eq('user_id', user.id)
+      if (delErr) throw new Error(delErr.message || 'Löschen fehlgeschlagen.')
+      onDelete?.(card)
+      onClose?.()
+    } catch (err) {
+      setError(err.message || 'Ein Fehler ist aufgetreten.')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -156,6 +182,15 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
               disabled={loading}
             />
           </div>
+          <label className="flex items-center gap-2 text-sm text-studiio-ink">
+            <input
+              type="checkbox"
+              checked={isDraft}
+              onChange={(e) => setIsDraft(e.target.checked)}
+              disabled={loading}
+            />
+            Als Entwurf speichern (noch nicht im Wiederholungsmodus)
+          </label>
           <div>
             <label className="block text-sm font-medium text-studiio-ink mb-1">Format</label>
             <select
@@ -200,6 +235,14 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
           <div className="flex gap-2 justify-end pt-2">
             <button
               type="button"
+              onClick={handleDelete}
+              disabled={loading || deleting}
+              className="mr-auto rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+            >
+              {deleting ? 'Löscht …' : 'Löschen'}
+            </button>
+            <button
+              type="button"
               onClick={onClose}
               className="rounded-lg border border-studiio-lavender/60 px-4 py-2 text-sm text-studiio-ink hover:bg-studiio-lavender/30"
             >
@@ -207,7 +250,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess }) {
             </button>
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || deleting}
               className="rounded-lg bg-studiio-accent px-4 py-2 text-sm font-medium text-white hover:bg-studiio-accentHover disabled:opacity-60"
             >
               {loading ? 'Wird gespeichert …' : 'Speichern'}

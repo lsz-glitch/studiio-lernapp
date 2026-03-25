@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import ReactMarkdown from 'react-markdown'
-import { recordStreakActivity } from '../utils/streak'
 import { addLearningTime } from '../utils/learningTime'
 import { completeTutorTasksForMaterial } from '../utils/learningPlan'
 import CompletionCelebration from './CompletionCelebration'
@@ -10,7 +9,7 @@ import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT
 import { getUserAiConfig } from '../utils/aiProvider'
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
-const MAX_PAGES_PER_EXPLANATION = 4
+const MAX_PAGES_PER_EXPLANATION = 2
 
 class LectureTutorErrorBoundary extends React.Component {
   constructor(props) {
@@ -63,6 +62,28 @@ function ensureExplainQuestion(text, pageStart, pageEnd) {
   ).trim()
 }
 
+function normalizeTutorTone(raw) {
+  return String(raw || '')
+    .replace(/\bIhre Antwort\b/g, 'Deine Antwort')
+    .replace(/\bSie haben\b/g, 'Du hast')
+    .replace(/\bfür Sie\b/g, 'für dich')
+    .replace(/\bIhnen\b/g, 'dir')
+}
+
+function stripNextMarker(raw) {
+  return String(raw || '').replace(/\[\[NEXT:(same|section)\]\]/gi, '').trim()
+}
+
+function extractThemeTitle(text, fallback = 'Thema') {
+  const lines = String(text || '')
+    .split('\n')
+    .map((line) => line.replace(/[*#`>\-]/g, '').trim())
+    .filter(Boolean)
+  const firstLine = lines.find((line) => !line.toLowerCase().includes('verständnisfrage'))
+  if (!firstLine) return fallback
+  return firstLine.length > 72 ? `${firstLine.slice(0, 72).trimEnd()}...` : firstLine
+}
+
 function LectureTutorInner({ user, subject, material, onBack }) {
   const isExerciseMode = isExerciseCategory(material?.category)
   const [pdfUrl, setPdfUrl] = useState(null)
@@ -88,12 +109,20 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const [isCompleted, setIsCompleted] = useState(false)
   const [progressHydrated, setProgressHydrated] = useState(false)
   const [bootstrapping, setBootstrapping] = useState(false)
+  const [chatWindowVersion, setChatWindowVersion] = useState(1)
+  const [archivedThemeChats, setArchivedThemeChats] = useState([])
+  const [nextThemeMode, setNextThemeMode] = useState('same') // 'same' | 'section'
+  const [themeRoundInSection, setThemeRoundInSection] = useState(1)
+  const [completedThemeKeys, setCompletedThemeKeys] = useState([])
+  const [showSkipChoice, setShowSkipChoice] = useState(false)
   const [materialIndex, setMaterialIndex] = useState(1)
   const [totalMaterials, setTotalMaterials] = useState(0)
-  const [pdfZoom, setPdfZoom] = useState(1)
+  const [pdfZoom, setPdfZoom] = useState(1.25)
   const sessionStartRef = useRef(Date.now())
   const savedSecondsRef = useRef(0)
   const pdfBlobRef = useRef(null)
+  const latestMessageRef = useRef(null)
+  const currentThemeRef = useRef(null)
 
   // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
   useEffect(() => {
@@ -104,6 +133,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     }, 60 * 1000)
     return () => clearInterval(interval)
   }, [user?.id, subject?.id])
+
+  // Beim neuen Verlauf den Anfang der neuesten Nachricht sichtbar machen.
+  useEffect(() => {
+    if (!latestMessageRef.current) return
+    latestMessageRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [messages.length])
+
+  // Bei Themenwechsel den Fokus auf den aktuellen Themen-Block setzen.
+  useEffect(() => {
+    if (!currentThemeRef.current) return
+    currentThemeRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [chatWindowVersion])
 
   // Seitenkontext je Material aufbauen/laden (mit Backend-Cache gegen doppelte KI-Kosten).
   useEffect(() => {
@@ -228,6 +269,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     currentStartPage + MAX_PAGES_PER_EXPLANATION - 1,
     pdfNumPages || currentStartPage + MAX_PAGES_PER_EXPLANATION - 1,
   )
+  const currentThemeKey = `${currentStartPage}-${currentEndPage}:${themeRoundInSection}`
+  const isCurrentThemeAnswered = completedThemeKeys.includes(currentThemeKey)
   const pagesToDisplay = isExerciseMode
     ? [currentStartPage]
     : Array.from(
@@ -383,6 +426,12 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           if (Array.isArray(saved.explanationHistory)) setExplanationHistory(saved.explanationHistory)
           if (typeof saved.historyIndex === 'number') setHistoryIndex(saved.historyIndex)
           if (typeof saved.isCompleted === 'boolean') setIsCompleted(saved.isCompleted)
+          if (typeof saved.themeRoundInSection === 'number' && saved.themeRoundInSection > 0) {
+            setThemeRoundInSection(saved.themeRoundInSection)
+          }
+          if (Array.isArray(saved.completedThemeKeys)) {
+            setCompletedThemeKeys(saved.completedThemeKeys)
+          }
         }
       } catch (e) {
         console.error('Fehler beim Laden des lokalen Tutor-Fortschritts:', e)
@@ -391,7 +440,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       try {
         const { data, error } = await supabase
           .from('tutor_progress')
-          .select('topic_index, num_pages, messages, current_task_text, started, initial_request_done, explanation_history, history_index, is_completed')
+          .select('topic_index, num_pages, messages, current_task_text, started, initial_request_done, explanation_history, history_index, is_completed, theme_round_in_section, completed_theme_keys')
           .eq('user_id', user.id)
           .eq('material_id', material.id)
           .maybeSingle()
@@ -405,6 +454,12 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           if (Array.isArray(data.explanation_history)) setExplanationHistory(data.explanation_history)
           if (typeof data.history_index === 'number') setHistoryIndex(data.history_index)
           if (typeof data.is_completed === 'boolean') setIsCompleted(data.is_completed)
+          if (typeof data.theme_round_in_section === 'number' && data.theme_round_in_section > 0) {
+            setThemeRoundInSection(data.theme_round_in_section)
+          }
+          if (Array.isArray(data.completed_theme_keys)) {
+            setCompletedThemeKeys(data.completed_theme_keys)
+          }
         }
       } catch (_) {
         // stilles Fallback auf localStorage
@@ -430,12 +485,27 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         explanationHistory,
         historyIndex,
         isCompleted,
+        themeRoundInSection,
+        completedThemeKeys,
       }
       localStorage.setItem(key, JSON.stringify(toSave))
     } catch (e) {
       console.error('Fehler beim Speichern des Tutor-Fortschritts:', e)
     }
-  }, [material.id, topicIndex, messages, pdfNumPages, currentTaskText, started, initialRequestDone, explanationHistory, historyIndex, isCompleted])
+  }, [
+    material.id,
+    topicIndex,
+    messages,
+    pdfNumPages,
+    currentTaskText,
+    started,
+    initialRequestDone,
+    explanationHistory,
+    historyIndex,
+    isCompleted,
+    themeRoundInSection,
+    completedThemeKeys,
+  ])
 
   useEffect(() => {
     if (!progressHydrated || !user?.id || !material?.id || !subject?.id) return
@@ -457,6 +527,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
               explanation_history: explanationHistory,
               history_index: historyIndex,
               is_completed: isCompleted,
+              theme_round_in_section: themeRoundInSection,
+              completed_theme_keys: completedThemeKeys,
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'user_id,material_id' },
@@ -478,6 +550,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     explanationHistory,
     historyIndex,
     isCompleted,
+    themeRoundInSection,
+    completedThemeKeys,
   ])
 
   async function fetchAiConfig() {
@@ -557,7 +631,6 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       const taskText = (text || 'Keine Aufgabe gefunden.').trim()
       setCurrentTaskText(taskText)
       setMessages((prev) => [...prev, { role: 'assistant', content: `**Aufgabe ${taskNum}**\n\n${taskText}` }])
-      recordStreakActivity(user?.id)
     } catch (err) {
       setMessages((prev) => [...prev, { role: 'assistant', content: err?.message || 'Aufgabe konnte nicht geladen werden.' }])
     } finally {
@@ -639,11 +712,31 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           'Folien/Seiten:\n' +
           '- Erkläre grundsätzlich jede Folie (jede Seite) einzeln. Nur wenn zwei Folien thematisch zusammengehören (z.B. eine Tabelle über zwei Seiten, ein zusammenhängender Beweis), erkläre sie gemeinsam – sonst immer eine Folie pro Schritt.\n\n' +
           'Wichtige Regeln:\n' +
+          '- Sprich den Nutzer immer in Du-Form an (du/dein), niemals in Sie-Form.\n' +
+          '- Zerlege den Abschnitt in kleinstmögliche Unterthemen und behandle pro Antwort genau EIN Unterthema.\n' +
+          '- Erkläre nie mehrere große Themenblöcke in einer Antwort. Wenn der Abschnitt viele Begriffe enthält, starte nur mit dem ersten Unterthema.\n' +
+          '- Halte die Erklärung kurz und fokussiert (max. 5 kurze Bulletpoints oder ein kurzer Fließtext bis ca. 120 Wörter).\n' +
+          '- Wenn du Bulletpoints nutzt: ein Punkt pro Zeile mit Leerzeile zwischen den Punkten. Jeder Punkt muss als vollständiger, sinnvoller Gedanke formuliert sein.\n' +
+          '- Keine Telegramm-Stichpunkte ohne Kontext; jeder Punkt soll kurz erklären, warum er wichtig ist.\n' +
           '- Pro Thema/Folie stellst du genau EINE Verständnisfrage. Keine zweite Verständnisfrage zu demselben Thema.\n' +
           '- Der/die Studierende kann jederzeit Rückfragen zum aktuellen Thema stellen. Beantworte Rückfragen klar und kurz; stelle dabei keine weitere Verständnisfrage.\n' +
           '- Wenn der/die Studierende auf die Verständnisfrage antwortet: Bewerte die Antwort (richtig/fehlt/Missverständnisse), gib eine kurze Idealantwort. Danach ist das Thema für dich abgeschlossen – wechsle nicht von selbst zum nächsten Thema.\n' +
-          '- Ein neues Thema beginnst du nur, wenn der Nutzer explizit zum nächsten Thema wechselt (z.B. per Button „Nächstes Thema“). Bis dahin bleibst du beim aktuellen Thema und beantwortest nur noch Rückfragen.\n' +
-          '- Wenn du im Modus "Erklärung" antwortest, beende deine Antwort IMMER mit genau einer klaren offenen Verständnisfrage (mit Fragezeichen am Ende).',
+          '- Ein neues Thema beginnt auf Wunsch des Nutzers per Button „Nächstes Thema“.\n' +
+          '- Gehe in sinnvoller Reihenfolge durch den Inhalt, ohne Themen zu überspringen.\n' +
+          '- Wenn ein Unterthema inhaltlich über zwei Seiten geht, erkläre es zusammenhängend über beide Seiten.\n' +
+          '- Wenn du im Modus "Erklärung" antwortest, beende deine Antwort IMMER mit genau einer klaren offenen Verständnisfrage (mit Fragezeichen am Ende).\n' +
+          '- Nenne NIEMALS UI-Elemente oder Button-Texte in deiner Antwort (z.B. "Nächstes Thema", "Nächstes Unterthema", "Nächster Abschnitt").\n' +
+          '- Antworte im Modus "Erklärung" immer in diesem stabilen Format:\n' +
+          '  1) Überschrift (eine kurze Zeile)\n' +
+          '  2) Erklärung (kurz, klar)\n' +
+          '  3) Verständnisfrage (genau eine Frage)\n' +
+          '- Füge am Ende deiner Erklärung IMMER eine Steuerzeile hinzu: [[NEXT:same]] oder [[NEXT:section]].\n' +
+          '- [[NEXT:same]] = Es gibt in den aktuellen Seiten noch ein weiteres Unterthema.\n' +
+          '- [[NEXT:section]] = Die aktuellen Seiten sind inhaltlich ausgeschöpft, beim nächsten Klick kann zum nächsten Seitenabschnitt gewechselt werden.\n' +
+          '- Antworte im Modus "Antwortbewertung" immer in diesem stabilen Format:\n' +
+          '  1) Kurzes, knackiges Feedback (richtig/teilweise/falsch, max. 2 Sätze)\n' +
+          '  2) Idealantwort (2-4 Sätze)\n' +
+          '  3) Optional ein kurzer Lernhinweis',
         messages: [
           {
             role: 'user',
@@ -656,11 +749,12 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                   `Datei: ${material.filename}\n` +
                   `Startseite: ${currentStartPage}\n` +
                   `Endseite: ${currentEndPage}\n` +
+                  `Thema-Runde im aktuellen Abschnitt: ${themeRoundInSection}\n` +
                   `Wichtig: Beziehe dich nur auf diese Seiten (maximal ${MAX_PAGES_PER_EXPLANATION} Seiten).\n\n` +
                   (mode === 'explain'
-                    ? `Erkläre den nächsten Abschnitt nur aus den Seiten ${currentStartPage} bis ${currentEndPage} (maximal ${MAX_PAGES_PER_EXPLANATION} Seiten). Erkläre verständlich, mit Beispielen und Umformulierungen. Stelle danach genau EINE offene Verständnisfrage zu diesem Abschnitt. Der Nutzer kann darauf antworten oder Rückfragen stellen; wechsle erst zum nächsten Abschnitt, wenn er es per Button wünscht.`
+                    ? `Erkläre genau EIN nächstes Thema aus den Seiten ${currentStartPage} bis ${currentEndPage} (maximal ${MAX_PAGES_PER_EXPLANATION} Seiten). Stelle danach genau EINE offene Verständnisfrage. Wechsle erst beim Button „Nächstes Thema“ weiter.`
                     : 'Der Nutzer antwortet oder stellt eine Rückfrage zum aktuellen Thema.\n\n' +
-                      'Wenn es eine Antwort auf deine Verständnisfrage ist: Bewerte sie (richtig/fehlt/Missverständnisse), gib eine kurze Idealantwort. Stelle danach keine weitere Verständnisfrage zu diesem Thema.\n\n' +
+                      'Wenn es eine Antwort auf deine Verständnisfrage ist: Bewerte sie im stabilen Antwortbewertungs-Format (Feedback, Idealantwort, optional Lernhinweis). Stelle danach keine weitere Verständnisfrage zu diesem Thema.\n\n' +
                       'Wenn es eine Rückfrage ist: Beantworte sie zum aktuellen Thema. Keine neue Verständnisfrage.\n\n' +
                       `Nachricht des Nutzers:\n${userMessage || '(keine zusätzliche Nachricht)'}`) +
                   '\n\n--- Inhalt der Vorlesung (extrahierter PDF-Text) ---\n' +
@@ -731,11 +825,25 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         throw new Error(MSG_API_WRONG_ENDPOINT)
       }
       let text = data?.content?.[0]?.text || 'Keine Antwort vom Tutor erhalten.'
+      text = normalizeTutorTone(text)
+      text = stripNextMarker(text)
       if (mode === 'explain') {
+        // Interne Steuer-Markierung für "Nächstes Thema":
+        // [[NEXT:same]] => im selben Abschnitt bleiben
+        // [[NEXT:section]] => zum nächsten Abschnitt wechseln
+        const rawText = data?.content?.[0]?.text || ''
+        const nextMatch = rawText.match(/\[\[NEXT:(same|section)\]\]/i)
+        if (nextMatch?.[1]) {
+          setNextThemeMode(nextMatch[1].toLowerCase() === 'section' ? 'section' : 'same')
+        } else {
+          // Konservativ: Ohne Marker nicht vorschnell weiterblättern.
+          setNextThemeMode('same')
+        }
         text = ensureExplainQuestion(text, currentStartPage, currentEndPage)
         const entry = {
           startPage: currentStartPage,
           endPage: currentEndPage,
+          title: extractThemeTitle(text, `Thema ${explanationHistory.length + 1}`),
           text,
           createdAt: Date.now(),
         }
@@ -753,6 +861,12 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           : []),
         { role: 'assistant', content: text },
       ])
+      if (mode === 'answer' && String(userMessage || '').trim() && !isExerciseMode) {
+        setCompletedThemeKeys((prev) => (
+          prev.includes(currentThemeKey) ? prev : [...prev, currentThemeKey]
+        ))
+        setShowSkipChoice(false)
+      }
     } catch (err) {
       console.error('[LectureTutor] sendToClaude Fehler:', err)
       const isNetworkError =
@@ -774,16 +888,82 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     }
   }
 
-  function handleAskForSlide() {
-    if (pdfNumPages > 0 && currentEndPage >= pdfNumPages) {
+  function goToNextTheme() {
+    const shouldAdvanceSection = nextThemeMode === 'section'
+    if (shouldAdvanceSection && pdfNumPages > 0 && currentEndPage >= pdfNumPages) {
       setIsCompleted(true)
       try {
         localStorage.setItem(`studiio_tutor_completed_${material.id}`, 'true')
       } catch (_) {}
       return
     }
-    setTopicIndex((idx) => idx + MAX_PAGES_PER_EXPLANATION)
+    // Neues Thema = neue Chatseite (frischer Verlauf im Chatfenster).
+    if (messages.length > 0) {
+      setArchivedThemeChats((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-${prev.length + 1}`,
+          title: extractThemeTitle(
+            explanationHistory[historyIndex]?.text || messages.find((m) => m.role === 'assistant')?.content || '',
+            `Thema ${prev.length + 1}`,
+          ),
+          topicIndex,
+          themeRoundInSection,
+          startPage: currentStartPage,
+          endPage: currentEndPage,
+          messages: messages.filter((m) => m.role !== 'system'),
+        },
+      ])
+    }
+    setMessages([])
+    setInput('')
+    setCurrentTaskText(null)
+    setShowSkipChoice(false)
+    setChatWindowVersion((v) => v + 1)
+    if (shouldAdvanceSection) {
+      setTopicIndex((idx) => idx + MAX_PAGES_PER_EXPLANATION)
+      setThemeRoundInSection(1)
+      setNextThemeMode('same')
+    } else {
+      setThemeRoundInSection((n) => n + 1)
+    }
     sendToClaude({ userMessage: '', mode: 'explain' })
+  }
+
+  function handleNextTheme() {
+    if (!isExerciseMode && !isCurrentThemeAnswered) {
+      setShowSkipChoice(true)
+      return
+    }
+    goToNextTheme()
+  }
+
+  function handleOpenArchivedTheme(chat) {
+    if (!chat) return
+    setMessages(chat.messages || [])
+    if (typeof chat.topicIndex === 'number') setTopicIndex(chat.topicIndex)
+    if (typeof chat.themeRoundInSection === 'number') setThemeRoundInSection(chat.themeRoundInSection)
+    setCurrentTaskText(null)
+    setInput('')
+    setChatWindowVersion((v) => v + 1)
+  }
+
+  function handleHistoryNavigate(delta) {
+    const nextIndex = Math.max(0, Math.min(explanationHistory.length - 1, historyIndex + delta))
+    if (nextIndex === historyIndex) return
+    setHistoryIndex(nextIndex)
+    const targetArchivedChat = archivedThemeChats[nextIndex]
+    if (targetArchivedChat) {
+      handleOpenArchivedTheme(targetArchivedChat)
+      return
+    }
+    const entry = explanationHistory[nextIndex]
+    if (!entry) return
+    setTopicIndex(entry.startPage)
+    setMessages([{ role: 'assistant', content: entry.text }])
+    setCurrentTaskText(null)
+    setInput('')
+    setChatWindowVersion((v) => v + 1)
   }
 
   function handleSubmitChat(e) {
@@ -807,23 +987,9 @@ function LectureTutorInner({ user, subject, material, onBack }) {
 
   function handleSkip(type) {
     const label = type === 'known' ? 'Kann ich bereits' : 'Nicht relevant'
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: 'user',
-        content: `${label} – bitte nächste Folie.`,
-      },
-    ])
-    if (pdfNumPages > 0 && currentEndPage >= pdfNumPages) {
-      setIsCompleted(true)
-      try {
-        localStorage.setItem(`studiio_tutor_completed_${material.id}`, 'true')
-      } catch (_) {}
-    } else {
-      setTopicIndex((idx) => idx + MAX_PAGES_PER_EXPLANATION)
-      sendToClaude({ userMessage: '', mode: 'explain' })
-    }
-    recordStreakActivity(user?.id)
+    setCompletedThemeKeys((prev) => (prev.includes(currentThemeKey) ? prev : [...prev, currentThemeKey]))
+    setMessages((prev) => [...prev, { role: 'user', content: `${label}.` }])
+    goToNextTheme()
   }
 
   function handleFinishTutor() {
@@ -903,24 +1069,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     if (!loading) setBootstrapping(false)
   }, [loading])
 
-  const hasUserAnswered = messages.some(
-    (m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0,
-  )
-  const completedPages = hasUserAnswered
-    ? Math.min(
-        pdfNumPages,
-        isExerciseMode
-          ? Math.max(0, currentStartPage)
-          : Math.max(0, currentStartPage - 1) + MAX_PAGES_PER_EXPLANATION,
-      )
-    : 0
-  const progressPercent =
-    pdfNumPages > 0
-      ? Math.min(100, Math.round((completedPages / pdfNumPages) * 100))
-      : null
+  useEffect(() => {
+    setCompletedThemeKeys([])
+  }, [material?.id])
+
+  const discoveredThemes = Math.max(1, explanationHistory.length)
+  const completedThemes = completedThemeKeys.length
+  const progressPercent = isCompleted
+    ? 100
+    : Math.min(100, Math.round((completedThemes / discoveredThemes) * 100))
   const isLastTopic = pdfNumPages > 0 && currentEndPage >= pdfNumPages
 
-  const pdfBaseWidth = 380
+  const pdfBaseWidth = 470
   const pdfWidth = Math.round(pdfBaseWidth * pdfZoom)
   const pdfHeight = Math.round(pdfWidth * (4 / 3))
 
@@ -961,11 +1121,9 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         </button>
         <div className="flex items-center gap-3 min-w-0">
           <span className="text-sm font-medium text-studiio-ink truncate">
-            {totalMaterials > 0 ? (
-              <>Datei {materialIndex} von {totalMaterials}</>
-            ) : (
-              <>{material.filename}</>
-            )}
+            {isExerciseMode
+              ? `Folie ${currentStartPage}${pdfNumPages > 0 ? ` von ${pdfNumPages}` : ''}`
+              : `Folien ${currentStartPage}-${currentEndPage}${pdfNumPages > 0 ? ` von ${pdfNumPages}` : ''}`}
           </span>
           <div className="flex items-center gap-2 w-24 sm:w-32">
             <div className="flex-1 h-2 rounded-full bg-studiio-lavender/40 overflow-hidden">
@@ -995,7 +1153,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                 : `Folien ${currentStartPage}-${currentEndPage}${pdfNumPages > 0 ? ` von ${pdfNumPages}` : ''}`}
             </span>
           </header>
-          <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-studiio-sky/30 p-2">
+          <div className="flex-1 min-h-0 flex items-center justify-center overflow-auto bg-studiio-sky/30 p-0">
             {pdfError ? (
               <div className="px-4 py-3 text-sm text-red-700 rounded-lg bg-red-50 border border-red-200">
                 <p className="font-semibold mb-1">PDF konnte nicht geladen werden.</p>
@@ -1005,13 +1163,13 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                 </p>
               </div>
             ) : pdfUrl ? (
-              <div className="w-full h-full overflow-auto flex flex-col items-center justify-start p-2 gap-2">
+              <div className="w-full h-full overflow-auto flex flex-col items-center justify-start p-0 gap-2">
                 {pagesToDisplay.map((page) => (
                   <iframe
                     key={`${material.id}-${page}-${pdfZoom}`}
                     src={`${pdfUrl}#page=${page}&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0`}
                     title={`${material.filename} – Seite ${page}`}
-                    className="flex-shrink-0 border-0 bg-white rounded-lg shadow-md pointer-events-none"
+                    className="flex-shrink-0 border-0 bg-white pointer-events-none"
                     style={{
                       width: pdfWidth,
                       height: pdfHeight,
@@ -1073,31 +1231,9 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                   {loading ? '…' : pdfTextLoading ? 'Laden …' : 'Nächste Aufgabe'}
                 </button>
               ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleAskForSlide}
-                    disabled={loading || pdfTextLoading || !pdfExtractedText}
-                    className="studiio-btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={!pdfExtractedText && !pdfTextLoading ? 'Zuerst PDF-Text laden' : undefined}
-                  >
-                    {loading ? '…' : pdfTextLoading ? 'Laden …' : 'Nächstes Thema'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSkip('known')}
-                    className="rounded-lg border-2 border-studiio-mint/80 bg-studiio-mint/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-mint/50"
-                  >
-                    Kann ich bereits
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSkip('irrelevant')}
-                    className="rounded-lg border-2 border-studiio-peach/80 bg-studiio-peach/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-peach/50"
-                  >
-                    Nicht relevant
-                  </button>
-                </>
+                <span className="text-xs text-studiio-muted">
+                  Nächstes Thema wechselst du unten im Chat.
+                </span>
               )}
             </div>
           </div>
@@ -1134,7 +1270,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => setHistoryIndex((i) => Math.max(0, i - 1))}
+                      onClick={() => handleHistoryNavigate(-1)}
                       disabled={historyIndex <= 0}
                       className="rounded px-2 py-0.5 bg-white border border-studiio-lavender/60 disabled:opacity-50"
                     >
@@ -1145,7 +1281,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setHistoryIndex((i) => Math.min(explanationHistory.length - 1, i + 1))}
+                      onClick={() => handleHistoryNavigate(1)}
                       disabled={historyIndex >= explanationHistory.length - 1}
                       className="rounded px-2 py-0.5 bg-white border border-studiio-lavender/60 disabled:opacity-50"
                     >
@@ -1155,18 +1291,66 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                 </div>
                 {historyIndex >= 0 && explanationHistory[historyIndex] && (
                   <p className="mt-1 text-studiio-muted line-clamp-1">
-                    Folien {explanationHistory[historyIndex].startPage}-{explanationHistory[historyIndex].endPage}
+                    {explanationHistory[historyIndex].title || `Folien ${explanationHistory[historyIndex].startPage}-${explanationHistory[historyIndex].endPage}`}
                   </p>
                 )}
               </div>
             )}
           </header>
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
+          <div key={chatWindowVersion} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
+            {archivedThemeChats.map((chat) => (
+              <div key={chat.id} className="rounded-xl border border-studiio-lavender/50 bg-studiio-lavender/10 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-studiio-muted">
+                    {chat.title} · Folien {chat.startPage}-{chat.endPage}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenArchivedTheme(chat)}
+                    className="rounded border border-studiio-lavender/60 px-2 py-1 text-[11px] font-medium text-studiio-ink hover:bg-white"
+                  >
+                    Öffnen
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-40 overflow-auto pr-1">
+                  {chat.messages.map((m, i) => (
+                    <div key={i} className={m.role === 'user' ? 'text-right' : 'text-left'}>
+                      {m.role === 'user' ? (
+                        <div className="inline-block max-w-[85%] rounded-2xl bg-studiio-accent text-white px-3 py-2 text-sm">
+                          {m.content}
+                        </div>
+                      ) : (
+                        <div className="inline-block max-w-[85%] rounded-2xl bg-white text-studiio-ink px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1">
+                          <ReactMarkdown>{m.content}</ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <div ref={currentThemeRef} className="rounded-xl border border-studiio-lavender/50 bg-white p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-studiio-muted">
+                  Aktuelles Thema · Folien {currentStartPage}-{currentEndPage}
+                </p>
+                {archivedThemeChats.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenArchivedTheme(archivedThemeChats[archivedThemeChats.length - 1])}
+                    className="rounded border border-studiio-lavender/60 px-2 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+                  >
+                    Vorheriges Thema
+                  </button>
+                )}
+              </div>
             {messages
               .filter((m) => m.role !== 'system')
-              .map((m, index) => (
+              .map((m, index, arr) => (
                 <div
                   key={index}
+                  ref={index === arr.length - 1 ? latestMessageRef : null}
                   className={m.role === 'user' ? 'text-right' : 'text-left'}
                 >
                   {m.role === 'user' ? (
@@ -1183,6 +1367,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             {loading && (
               <p className="text-sm text-studiio-muted">Tutor schreibt …</p>
             )}
+            </div>
           </div>
           <form
             onSubmit={handleSubmitChat}
@@ -1200,6 +1385,38 @@ function LectureTutorInner({ user, subject, material, onBack }) {
               placeholder={isExerciseMode ? 'Deine Lösung oder Antwort eingeben …' : 'Deine Frage oder Bitte an den Tutor …'}
               className="studiio-input flex-1 text-base py-2.5 min-h-[90px] resize-y"
             />
+            {!isExerciseMode && showSkipChoice && (
+              <div className="rounded-lg border border-studiio-lavender/60 bg-studiio-lavender/15 px-3 py-2 text-sm text-studiio-ink">
+                <p className="mb-2">Du hast die Frage noch nicht beantwortet. Ist das Thema schon klar oder unwichtig?</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSkip('known')}
+                    className="rounded-lg border-2 border-studiio-mint/80 bg-studiio-mint/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-mint/50"
+                  >
+                    Kann ich bereits
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSkip('irrelevant')}
+                    className="rounded-lg border-2 border-studiio-peach/80 bg-studiio-peach/30 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-peach/50"
+                  >
+                    Nicht relevant
+                  </button>
+                </div>
+              </div>
+            )}
+            {!isExerciseMode && (
+              <button
+                type="button"
+                onClick={handleNextTheme}
+                disabled={loading || pdfTextLoading || !pdfExtractedText}
+                className="rounded-lg border-2 border-studiio-accent/70 bg-white px-4 py-2.5 text-base font-semibold text-studiio-accent hover:bg-studiio-accent/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!pdfExtractedText && !pdfTextLoading ? 'Zuerst PDF-Text laden' : undefined}
+              >
+                {loading ? '…' : pdfTextLoading ? 'Laden …' : (isLastTopic ? 'Lektion abschließen' : 'Nächstes Thema')}
+              </button>
+            )}
             <button
               type="submit"
               disabled={loading || !input.trim()}
@@ -1207,15 +1424,6 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             >
               Senden
             </button>
-            {!isExerciseMode && (
-              <button
-                type="button"
-                onClick={handleAskForSlide}
-                className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm text-studiio-muted hover:bg-studiio-lavender/30"
-              >
-                {isLastTopic ? 'Lektion abschließen' : 'Zum nächsten Thema'}
-              </button>
-            )}
           </form>
         </section>
       </div>

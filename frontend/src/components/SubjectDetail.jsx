@@ -3,9 +3,7 @@ import { supabase } from '../supabaseClient'
 import SubjectMaterials from './SubjectMaterials'
 import LectureTutor from './LectureTutor'
 import FlashcardCreateModal from './FlashcardCreateModal'
-import FlashcardsSection from './FlashcardsSection'
 import FlashcardPracticePage from './FlashcardPracticePage'
-import SubjectProgress from './SubjectProgress'
 import { getLearningTime, formatLearningTime } from '../utils/learningTime'
 
 class SubjectDetailErrorBoundary extends React.Component {
@@ -59,10 +57,18 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
   const [flashcardMaterial, setFlashcardMaterial] = useState(null)
   const [flashcardRefresh, setFlashcardRefresh] = useState(0)
   const [showFlashcardPractice, setShowFlashcardPractice] = useState(false)
-  const [showAddModal, setShowAddModal] = useState(false)
+  const [practiceMaterialFilter, setPracticeMaterialFilter] = useState(null)
   const [learningTimeSeconds, setLearningTimeSeconds] = useState(0)
   const [learningTimeRefresh, setLearningTimeRefresh] = useState(0)
   const [tutorRefresh, setTutorRefresh] = useState(0)
+  const [progressSummaryPct, setProgressSummaryPct] = useState(null)
+  const [noteText, setNoteText] = useState('')
+  const [lastSavedNote, setLastSavedNote] = useState('')
+  const [noteLoading, setNoteLoading] = useState(true)
+  const [noteHydrated, setNoteHydrated] = useState(false)
+  const [noteSaving, setNoteSaving] = useState(false)
+  const [noteStatus, setNoteStatus] = useState('')
+  const [noteError, setNoteError] = useState('')
 
   useEffect(() => {
     if (!user?.id || !subject?.id) return
@@ -76,9 +82,130 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
     }
   }, [user?.id, subject?.id, learningTimeRefresh])
 
+  useEffect(() => {
+    if (!user?.id || !subject?.id) return
+    let mounted = true
+    ;(async () => {
+      try {
+        const { data: materialsData, error: matErr } = await supabase
+          .from('materials')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .is('deleted_at', null)
+        if (matErr) throw matErr
+
+        const materialIds = new Set((materialsData || []).map((m) => m.id))
+        const materialsTotal = materialIds.size
+
+        const { data: cardsData, error: cardsErr } = await supabase
+          .from('flashcards')
+          .select('id, material_id, interval_days')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('is_draft', false)
+        if (cardsErr) throw cardsErr
+        const cards = cardsData || []
+        const cardsTotal = cards.length
+        const cardsLearned = cards.filter((c) => Number(c.interval_days || 0) > 0).length
+
+        const { data: tutorRows, error: tutorErr } = await supabase
+          .from('tutor_progress')
+          .select('material_id')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('is_completed', true)
+        if (tutorErr) throw tutorErr
+        const tutorDoneIds = new Set((tutorRows || []).map((r) => r.material_id).filter((id) => id && materialIds.has(id)))
+        const materialsWithCards = new Set(cards.map((c) => c.material_id).filter((id) => id && materialIds.has(id)))
+        const materialsDone = Array.from(materialsWithCards).filter((id) => tutorDoneIds.has(id)).length
+
+        const matPct = materialsTotal > 0 ? Math.round((materialsDone / materialsTotal) * 100) : null
+        const cardPct = cardsTotal > 0 ? Math.round((cardsLearned / cardsTotal) * 100) : null
+        const avgPct = matPct != null && cardPct != null
+          ? Math.round((matPct + cardPct) / 2)
+          : (matPct ?? cardPct ?? null)
+        if (mounted) setProgressSummaryPct(avgPct)
+      } catch (_) {
+        if (mounted) setProgressSummaryPct(null)
+      }
+    })()
+    return () => { mounted = false }
+  }, [user?.id, subject?.id, flashcardRefresh, tutorRefresh])
+
+  useEffect(() => {
+    if (!user?.id || !subject?.id) return
+    let mounted = true
+    setNoteLoading(true)
+    setNoteHydrated(false)
+    setNoteError('')
+    setNoteStatus('')
+    supabase
+      .from('subject_notes')
+      .select('content')
+      .eq('user_id', user.id)
+      .eq('subject_id', subject.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!mounted) return
+        if (error) {
+          console.error('Fehler beim Laden der Notiz:', error)
+          setNoteError('Notiz konnte nicht geladen werden. Bitte SQL für subject_notes ausführen.')
+          setNoteText('')
+          setLastSavedNote('')
+        } else {
+          const loaded = data?.content || ''
+          setNoteText(loaded)
+          setLastSavedNote(loaded)
+        }
+        setNoteLoading(false)
+        setNoteHydrated(true)
+      })
+    return () => { mounted = false }
+  }, [user?.id, subject?.id])
+
+  async function persistNote(nextText) {
+    if (!user?.id || !subject?.id) return
+    if (noteSaving) return
+    if (nextText === lastSavedNote) return
+    setNoteSaving(true)
+    setNoteError('')
+    setNoteStatus('Speichert …')
+    const { error } = await supabase
+      .from('subject_notes')
+      .upsert(
+        {
+          user_id: user.id,
+          subject_id: subject.id,
+          content: nextText,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,subject_id' }
+      )
+    setNoteSaving(false)
+    if (error) {
+      console.error('Fehler beim Speichern der Notiz:', error)
+      setNoteError('Notiz konnte nicht gespeichert werden. Bitte SQL für subject_notes ausführen.')
+      return
+    }
+    setLastSavedNote(nextText)
+    setNoteStatus('Automatisch gespeichert.')
+  }
+
+  useEffect(() => {
+    if (!noteHydrated || noteLoading) return
+    if (noteText === lastSavedNote) return
+    const timer = setTimeout(() => {
+      persistNote(noteText)
+    }, 700)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteText, lastSavedNote, noteHydrated, noteLoading, user?.id, subject?.id])
+
   // Direkt vom Dashboard „Vokabeln üben“ geöffnet?
   React.useEffect(() => {
     if (openToPractice && subject?.id) {
+      setPracticeMaterialFilter(null)
       setShowFlashcardPractice(true)
       onOpenToPracticeHandled?.()
     }
@@ -119,6 +246,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       <FlashcardPracticePage
         user={user}
         subject={subject}
+        materialFilter={practiceMaterialFilter}
         onBack={() => { setShowFlashcardPractice(false); setFlashcardRefresh((r) => r + 1); setLearningTimeRefresh((r) => r + 1) }}
       />
     )
@@ -135,62 +263,66 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         Zurück zur Übersicht
       </button>
 
-      <section className="space-y-1">
-        <h2 className="text-2xl font-semibold text-studiio-ink">{subject.name}</h2>
-        <p className="text-sm text-studiio-muted">
+      <section className="rounded-2xl border border-studiio-lavender/60 bg-white/90 px-4 py-3 shadow-sm">
+        <h2 className="text-3xl font-semibold tracking-tight text-studiio-ink">{subject.name}</h2>
+        <p className="mt-0.5 text-sm text-studiio-muted">
           {subject.group_label || 'Ohne Semester/Kategorie'}
         </p>
-        <p className="text-sm text-studiio-ink">
-          Countdown:&nbsp;
-          <span className="font-medium">
-            {formatCountdown(subject.exam_date)}
-          </span>
-        </p>
-        {subject.exam_date && (
-          <p className="text-xs text-studiio-muted">
-            Klausurtermin:&nbsp;
-            {new Date(subject.exam_date).toLocaleDateString('de-DE')}
-          </p>
-        )}
-        <p className="text-sm text-studiio-ink">
-          Bisher <span className="font-medium">{formatLearningTime(learningTimeSeconds)}</span> gelernt
-        </p>
-      </section>
-
-      <SubjectProgress
-        user={user}
-        subject={subject}
-        refreshTrigger={flashcardRefresh}
-      />
-
-      <SubjectMaterials
-        user={user}
-        subject={subject}
-        refreshTrigger={flashcardRefresh + tutorRefresh}
-        onOpenLecture={(material) => setActiveLecture(material)}
-        onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
-      />
-
-      <section className="border-t border-studiio-lavender/40 pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h3 className="text-lg font-semibold text-studiio-ink">Vokabeln / Karteikarten</h3>
-          <button
-            type="button"
-            onClick={() => setShowAddModal(true)}
-            className="rounded-lg border-2 border-dashed border-studiio-lavender/60 px-4 py-2 text-sm font-medium text-studiio-ink hover:border-studiio-accent hover:bg-studiio-sky/20"
-          >
-            Karte hinzufügen
-          </button>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-studiio-lavender/40 bg-[#eef5ff] px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Countdown</p>
+            <p className="text-sm font-semibold text-studiio-ink">{formatCountdown(subject.exam_date)}</p>
+          </div>
+          <div className="rounded-xl border border-studiio-lavender/40 bg-[#fff3e7] px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Klausur</p>
+            <p className="text-sm font-semibold text-studiio-ink">
+              {subject.exam_date ? new Date(subject.exam_date).toLocaleDateString('de-DE') : '—'}
+            </p>
+          </div>
+          <div className="rounded-xl border border-studiio-lavender/40 bg-[#ebfaf5] px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Gelernt</p>
+            <p className="text-sm font-semibold text-studiio-ink">{formatLearningTime(learningTimeSeconds)}</p>
+          </div>
+          <div className="rounded-xl border border-studiio-lavender/40 bg-[#f2eefb] px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Fortschritt</p>
+            <p className="text-sm font-semibold text-studiio-ink">{progressSummaryPct != null ? `${progressSummaryPct}%` : '—'}</p>
+          </div>
         </div>
-        <FlashcardsSection
-          user={user}
-          subject={subject}
-          refreshTrigger={flashcardRefresh}
-          onStartPractice={() => setShowFlashcardPractice(true)}
-          showAddModal={showAddModal}
-          onCloseAddModal={() => setShowAddModal(false)}
-        />
       </section>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="space-y-4">
+          <SubjectMaterials
+            user={user}
+            subject={subject}
+            refreshTrigger={flashcardRefresh + tutorRefresh}
+            onOpenLecture={(material) => setActiveLecture(material)}
+            onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
+            onStartPractice={(materialFilter = null) => {
+              setPracticeMaterialFilter(materialFilter)
+              setShowFlashcardPractice(true)
+            }}
+          />
+        </div>
+
+        <aside className="h-fit rounded-2xl border border-studiio-lavender/50 bg-white/90 px-4 py-4 space-y-3 xl:sticky xl:top-4">
+          <h3 className="text-base font-semibold text-studiio-ink">Notizen</h3>
+          {noteError && (
+            <p className="text-xs text-red-600">{noteError}</p>
+          )}
+          {noteLoading ? (
+            <p className="text-sm text-studiio-muted">Notiz wird geladen …</p>
+          ) : (
+            <textarea
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              placeholder="Kurze Stichpunkte, offene Fragen, Merksätze …"
+              rows={12}
+              className="w-full rounded-xl border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink placeholder:text-studiio-muted/70 focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
+            />
+          )}
+        </aside>
+      </div>
 
       {flashcardMaterial && (
         <FlashcardCreateModal

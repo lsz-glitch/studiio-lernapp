@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import SubjectProgressMini from './SubjectProgressMini'
 import LearningPlan from './LearningPlan'
-import { getStreak } from '../utils/streak'
+import { getApiBase } from '../config'
+import { getStreak, recordStreakActivity } from '../utils/streak'
 import { formatLearningTime, getTodayLearningTimeLocal } from '../utils/learningTime'
 
 function getAccentByIndex(index) {
@@ -51,6 +52,11 @@ function getGreetingText() {
   return 'Guten Tag!'
 }
 
+function getTodayLocalKey() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export default function DashboardSubjects({
   user,
   onOpenSubject,
@@ -87,6 +93,28 @@ export default function DashboardSubjects({
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [deleteError, setDeleteError] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [shareTarget, setShareTarget] = useState(null)
+  const [shareIncludeSubject, setShareIncludeSubject] = useState(true)
+  const [shareIncludeNotes, setShareIncludeNotes] = useState(true)
+  const [shareIncludeMaterials, setShareIncludeMaterials] = useState(true)
+  const [shareIncludeFlashcards, setShareIncludeFlashcards] = useState(true)
+  const [shareLoading, setShareLoading] = useState(false)
+  const [shareError, setShareError] = useState('')
+  const [shareCode, setShareCode] = useState('')
+  const [shareExpiresAt, setShareExpiresAt] = useState('')
+  const [shareCodeLabel, setShareCodeLabel] = useState('')
+  const [shareCodes, setShareCodes] = useState([])
+  const [shareCodesLoading, setShareCodesLoading] = useState(false)
+  const [shareCodesError, setShareCodesError] = useState('')
+  const [shareFilter, setShareFilter] = useState('active')
+  const [importOpen, setImportOpen] = useState(false)
+  const [importCode, setImportCode] = useState('')
+  const [importLoading, setImportLoading] = useState(false)
+  const [importError, setImportError] = useState('')
+  const [importSuccess, setImportSuccess] = useState('')
+  const [copyStatusCode, setCopyStatusCode] = useState('')
+  const [importPreviewLoading, setImportPreviewLoading] = useState(false)
+  const [importPreview, setImportPreview] = useState(null)
 
   useEffect(() => {
     let isMounted = true
@@ -160,7 +188,7 @@ export default function DashboardSubjects({
 
       const { data: completedToday, error: completedErr } = await supabase
         .from('learning_plan_tasks')
-        .select('id, title, type, completed_at')
+        .select('id, title, type, subject_id, material_id, completed_at')
         .eq('user_id', user.id)
         .gte('completed_at', startIso)
         .lt('completed_at', endIso)
@@ -171,7 +199,118 @@ export default function DashboardSubjects({
         console.error('Fehler beim Laden erledigter Tages-Tasks:', completedErr)
         setTodayCompletedTasks([])
       } else {
-        setTodayCompletedTasks(completedToday || [])
+        const taskRows = completedToday || []
+        const taskTutorMaterialIds = new Set(
+          taskRows
+            .filter((t) => t.type === 'tutor' && t.material_id)
+            .map((t) => t.material_id),
+        )
+
+        const { data: tutorRows, error: tutorErr } = await supabase
+          .from('tutor_progress')
+          .select('material_id, updated_at')
+          .eq('user_id', user.id)
+          .eq('is_completed', true)
+          .gte('updated_at', startIso)
+          .lt('updated_at', endIso)
+
+        if (tutorErr) {
+          console.error('Fehler beim Laden erledigter Tutor-Durchläufe:', tutorErr)
+          setTodayCompletedTasks(taskRows)
+          return
+        }
+
+        const tutorRowsWithoutTask = (tutorRows || []).filter(
+          (row) => row.material_id && !taskTutorMaterialIds.has(row.material_id),
+        )
+        if (!tutorRowsWithoutTask.length) {
+          setTodayCompletedTasks(taskRows)
+          return
+        }
+
+        const materialIds = Array.from(new Set(tutorRowsWithoutTask.map((row) => row.material_id)))
+        const { data: materialRows } = await supabase
+          .from('materials')
+          .select('id, filename')
+          .in('id', materialIds)
+          .eq('user_id', user.id)
+          .is('deleted_at', null)
+        const filenameById = new Map((materialRows || []).map((m) => [m.id, m.filename]))
+
+        const tutorEntries = tutorRowsWithoutTask.map((row) => ({
+          id: `tutor-${row.material_id}`,
+          title: `Tutor: ${filenameById.get(row.material_id) || 'Datei'}`,
+          type: 'tutor',
+          completed_at: row.updated_at,
+          material_id: row.material_id,
+        }))
+
+        const completedVocabSubjectIds = new Set(
+          taskRows
+            .filter((t) => t.type === 'vocab' && t.subject_id)
+            .map((t) => t.subject_id),
+        )
+
+        const { data: reviewRows, error: reviewErr } = await supabase
+          .from('flashcard_reviews')
+          .select('flashcard_id, created_at')
+          .eq('user_id', user.id)
+          .gte('created_at', startIso)
+          .lt('created_at', endIso)
+
+        let vocabEntries = []
+        if (reviewErr) {
+          console.error('Fehler beim Laden heutiger Vokabel-Übungen:', reviewErr)
+        } else if ((reviewRows || []).length > 0) {
+          const flashcardIds = Array.from(new Set((reviewRows || []).map((r) => r.flashcard_id).filter(Boolean)))
+          if (flashcardIds.length > 0) {
+            const { data: flashcardRows, error: flashcardErr } = await supabase
+              .from('flashcards')
+              .select('id, subject_id')
+              .in('id', flashcardIds)
+              .eq('user_id', user.id)
+            if (flashcardErr) {
+              console.error('Fehler beim Zuordnen der Vokabel-Übungen zu Fächern:', flashcardErr)
+            } else {
+              const subjectByCardId = new Map((flashcardRows || []).map((f) => [f.id, f.subject_id]))
+              const countBySubject = new Map()
+              let latestBySubject = new Map()
+              for (const row of reviewRows || []) {
+                const sid = subjectByCardId.get(row.flashcard_id)
+                if (!sid || completedVocabSubjectIds.has(sid)) continue
+                countBySubject.set(sid, (countBySubject.get(sid) || 0) + 1)
+                const ts = row.created_at ? new Date(row.created_at).getTime() : 0
+                const prev = latestBySubject.get(sid) || 0
+                if (ts > prev) latestBySubject.set(sid, ts)
+              }
+
+              const subjectIds = Array.from(countBySubject.keys())
+              let subjectNameById = new Map()
+              if (subjectIds.length > 0) {
+                const { data: subjectRows } = await supabase
+                  .from('subjects')
+                  .select('id, name')
+                  .in('id', subjectIds)
+                  .eq('user_id', user.id)
+                subjectNameById = new Map((subjectRows || []).map((s) => [s.id, s.name]))
+              }
+              vocabEntries = subjectIds.map((sid) => ({
+                id: `vocab-${sid}`,
+                title: `Vokabeln geübt: ${subjectNameById.get(sid) || 'Fach'}`,
+                type: 'vocab',
+                subject_id: sid,
+                completed_at: new Date(latestBySubject.get(sid) || Date.now()).toISOString(),
+              }))
+            }
+          }
+        }
+
+        const merged = [...taskRows, ...tutorEntries, ...vocabEntries].sort((a, b) => {
+          const at = a?.completed_at ? new Date(a.completed_at).getTime() : 0
+          const bt = b?.completed_at ? new Date(b.completed_at).getTime() : 0
+          return bt - at
+        })
+        setTodayCompletedTasks(merged)
       }
     }
 
@@ -183,6 +322,35 @@ export default function DashboardSubjects({
       window.clearInterval(intervalId)
     }
   }, [user.id, onTodayPlannedChange])
+
+  useEffect(() => {
+    let mounted = true
+    async function loadStreak() {
+      const data = await getStreak(user.id)
+      if (!mounted) return
+      setStreak(data || { current_streak_days: 0, last_activity_date: null })
+    }
+    loadStreak()
+    const intervalId = window.setInterval(loadStreak, 30000)
+    return () => {
+      mounted = false
+      window.clearInterval(intervalId)
+    }
+  }, [user.id])
+
+  useEffect(() => {
+    async function ensureDailyStreakFromLearningTime() {
+      if ((todayStats.learnedSeconds || 0) < 180) return
+      const today = getTodayLocalKey()
+      if (streak?.last_activity_date === today) return
+      const ok = await recordStreakActivity(user.id)
+      if (ok) {
+        const refreshed = await getStreak(user.id)
+        setStreak(refreshed || { current_streak_days: 0, last_activity_date: null })
+      }
+    }
+    ensureDailyStreakFromLearningTime()
+  }, [todayStats.learnedSeconds, streak?.last_activity_date, user.id])
 
   function getTaskTypeLabel(type) {
     if (type === 'tutor') return 'Tutor'
@@ -200,6 +368,16 @@ export default function DashboardSubjects({
     }
     return Array.from(groups.entries())
   }, [subjects])
+
+  const filteredShareCodes = useMemo(() => {
+    return shareCodes.filter((item) => {
+      const expired = item.expires_at ? new Date(item.expires_at).getTime() < Date.now() : false
+      const active = item.is_active && !expired
+      if (shareFilter === 'active') return active
+      if (shareFilter === 'expired') return expired
+      return true
+    })
+  }, [shareCodes, shareFilter])
   async function handleCreateSubject(e) {
     e.preventDefault()
     setError('')
@@ -261,6 +439,52 @@ export default function DashboardSubjects({
     setDeleteTarget(null)
     setDeleteConfirmName('')
     setDeleteError('')
+  }
+
+  async function loadShareCodes(subjectId) {
+    if (!subjectId) return
+    setShareCodesLoading(true)
+    setShareCodesError('')
+    const { data, error: err } = await supabase
+      .from('subject_share_exports')
+      .select('id, share_code, code_label, is_active, created_at, expires_at, include_subject, include_notes, include_materials, include_flashcards')
+      .eq('owner_user_id', user.id)
+      .eq('source_subject_id', subjectId)
+      .order('created_at', { ascending: false })
+      .limit(12)
+    setShareCodesLoading(false)
+    if (err) {
+      console.error('Share-Codes laden fehlgeschlagen:', err)
+      setShareCodesError('Bisherige Codes konnten nicht geladen werden.')
+      setShareCodes([])
+      return
+    }
+    setShareCodes(data || [])
+  }
+
+  function startShare(subject) {
+    setShareTarget(subject)
+    setShareIncludeSubject(true)
+    setShareIncludeNotes(true)
+    setShareIncludeMaterials(true)
+    setShareIncludeFlashcards(true)
+    setShareError('')
+    setShareCode('')
+    setShareCodeLabel('')
+    setShareExpiresAt('')
+    setShareFilter('active')
+    loadShareCodes(subject.id)
+  }
+
+  function cancelShare() {
+    setShareTarget(null)
+    setShareError('')
+    setShareCode('')
+    setShareCodeLabel('')
+    setShareExpiresAt('')
+    setShareCodes([])
+    setShareCodesError('')
+    setShareLoading(false)
   }
 
   async function handleUpdateSubject(e) {
@@ -326,6 +550,161 @@ export default function DashboardSubjects({
     cancelDelete()
   }
 
+  async function handleCreateShareCode() {
+    if (!shareTarget) return
+    const hasAny = shareIncludeSubject || shareIncludeNotes || shareIncludeMaterials || shareIncludeFlashcards
+    if (!hasAny) {
+      setShareError('Bitte wähle mindestens einen Bereich zum Teilen aus.')
+      return
+    }
+    setShareLoading(true)
+    setShareError('')
+    setShareCode('')
+    setShareExpiresAt('')
+    try {
+      const res = await fetch(`${getApiBase()}/api/subject-share/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerUserId: user.id,
+          subjectId: shareTarget.id,
+          codeLabel: shareCodeLabel.trim() || null,
+          includeSubject: shareIncludeSubject,
+          includeNotes: shareIncludeNotes,
+          includeMaterials: shareIncludeMaterials,
+          includeFlashcards: shareIncludeFlashcards,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || data?.details || 'Code konnte nicht erstellt werden.')
+      setShareCode(data?.export?.share_code || '')
+      setShareExpiresAt(data?.export?.expires_at || '')
+      await loadShareCodes(shareTarget.id)
+    } catch (err) {
+      setShareError(err.message || 'Code konnte nicht erstellt werden.')
+    } finally {
+      setShareLoading(false)
+    }
+  }
+
+  async function handleDeactivateShareCode(exportId) {
+    if (!exportId) return
+    const { error: err } = await supabase
+      .from('subject_share_exports')
+      .update({ is_active: false })
+      .eq('id', exportId)
+      .eq('owner_user_id', user.id)
+    if (err) {
+      console.error('Code deaktivieren fehlgeschlagen:', err)
+      setShareError('Code konnte nicht deaktiviert werden.')
+      return
+    }
+    if (shareTarget?.id) await loadShareCodes(shareTarget.id)
+  }
+
+  async function handleImportByCode() {
+    if (!importCode.trim()) {
+      setImportError('Bitte gib einen Code ein.')
+      return
+    }
+    setImportLoading(true)
+    setImportError('')
+    setImportSuccess('')
+    try {
+      let previewData = importPreview
+      if (!previewData) {
+        const previewRes = await fetch(`${getApiBase()}/api/subject-share/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: importCode.trim().toUpperCase() }),
+        })
+        const previewJson = await previewRes.json().catch(() => ({}))
+        if (!previewRes.ok) throw new Error(previewJson?.error || previewJson?.details || 'Code konnte nicht geprüft werden.')
+        previewData = previewJson?.preview || null
+        setImportPreview(previewData)
+      }
+
+      let mergeTargetSubjectId = null
+      const incomingName = normalizeSubjectName(previewData?.subjectName || '')
+      if (incomingName) {
+        const sameNameSubject = subjects.find((s) => normalizeSubjectName(s?.name || '') === incomingName)
+        if (sameNameSubject) {
+          const shouldMerge = window.confirm(
+            `Du hast schon ein Fach mit dem Namen "${sameNameSubject.name}".\n\nMöchtest du die Inhalte in dieses bestehende Fach zusammenlegen?\n\nOK = Zusammenlegen\nAbbrechen = neues Fach anlegen`,
+          )
+          if (shouldMerge) mergeTargetSubjectId = sameNameSubject.id
+        }
+      }
+
+      const res = await fetch(`${getApiBase()}/api/subject-share/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          importerUserId: user.id,
+          code: importCode.trim().toUpperCase(),
+          mergeTargetSubjectId,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || data?.details || 'Import fehlgeschlagen.')
+      if (data?.subject && !data?.mergedIntoExisting) {
+        setSubjects((prev) => [...prev, data.subject])
+      }
+      const copied = data?.copied || {}
+      const summary = [
+        copied.subjectMeta ? 'Rahmendaten' : null,
+        copied.notes ? 'Notizen' : null,
+        typeof copied.materials === 'number' ? `${copied.materials} Dateien` : null,
+        typeof copied.failedMaterials === 'number' && copied.failedMaterials > 0 ? `${copied.failedMaterials} Datei(en) nicht kopiert` : null,
+        typeof copied.flashcards === 'number' ? `${copied.flashcards} Vokabeln` : null,
+      ].filter(Boolean).join(' • ')
+      const prefix = data?.mergedIntoExisting ? 'Fach erfolgreich zusammengelegt' : 'Fach erfolgreich importiert'
+      setImportSuccess(summary ? `${prefix} (${summary}).` : `${prefix}.`)
+      setImportCode('')
+      setImportPreview(null)
+    } catch (err) {
+      setImportError(err.message || 'Import fehlgeschlagen.')
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  async function handleCopyShareCode(code) {
+    if (!code) return
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopyStatusCode(code)
+      window.setTimeout(() => setCopyStatusCode(''), 1400)
+    } catch (_) {
+      setShareError('Code konnte nicht in die Zwischenablage kopiert werden.')
+    }
+  }
+
+  async function handlePreviewImportCode() {
+    if (!importCode.trim()) {
+      setImportError('Bitte gib einen Code ein.')
+      setImportPreview(null)
+      return
+    }
+    setImportPreviewLoading(true)
+    setImportError('')
+    setImportPreview(null)
+    try {
+      const res = await fetch(`${getApiBase()}/api/subject-share/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: importCode.trim().toUpperCase() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || data?.details || 'Code konnte nicht geprüft werden.')
+      setImportPreview(data?.preview || null)
+    } catch (err) {
+      setImportError(err.message || 'Code konnte nicht geprüft werden.')
+    } finally {
+      setImportPreviewLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <section className="px-1">
@@ -389,6 +768,238 @@ export default function DashboardSubjects({
         </div>
       )}
 
+      {shareTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4" onClick={cancelShare}>
+          <div className="w-full max-w-lg rounded-2xl border border-studiio-lavender/40 bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-studiio-ink">Fach teilen per Code</h3>
+            <p className="mt-1 text-sm text-studiio-muted">
+              Du teilst: <span className="font-semibold text-studiio-ink">{shareTarget.name}</span>
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="block text-sm text-studiio-ink mb-1">Code-Name (optional)</label>
+                <input
+                  type="text"
+                  value={shareCodeLabel}
+                  onChange={(e) => setShareCodeLabel(e.target.value)}
+                  placeholder="z. B. Für Anna – nur Vokabeln"
+                  className="studiio-input w-full"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-studiio-ink">
+                <input type="checkbox" checked={shareIncludeSubject} onChange={(e) => setShareIncludeSubject(e.target.checked)} />
+                Rahmendaten
+              </label>
+              <label className="flex items-center gap-2 text-sm text-studiio-ink">
+                <input type="checkbox" checked={shareIncludeNotes} onChange={(e) => setShareIncludeNotes(e.target.checked)} />
+                Notizen
+              </label>
+              <label className="flex items-center gap-2 text-sm text-studiio-ink">
+                <input type="checkbox" checked={shareIncludeMaterials} onChange={(e) => setShareIncludeMaterials(e.target.checked)} />
+                Dateien
+              </label>
+              <label className="flex items-center gap-2 text-sm text-studiio-ink">
+                <input type="checkbox" checked={shareIncludeFlashcards} onChange={(e) => setShareIncludeFlashcards(e.target.checked)} />
+                Vokabeln
+              </label>
+            </div>
+            {shareError && <p className="mt-2 text-xs text-red-700">{shareError}</p>}
+            {shareCode && (
+              <div className="mt-3 rounded-lg border border-studiio-lavender/50 bg-studiio-sky/20 px-3 py-2">
+                <p className="text-xs text-studiio-muted">Dein Import-Code</p>
+                <p className="text-lg font-semibold tracking-wider text-studiio-ink">{shareCode}</p>
+                {shareExpiresAt && (
+                  <p className="mt-1 text-xs text-studiio-muted">
+                    Gültig bis: {new Date(shareExpiresAt).toLocaleDateString('de-DE')}
+                  </p>
+                )}
+              </div>
+            )}
+            <div className="mt-4">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-studiio-muted">Deine letzten Codes</p>
+                <div className="inline-flex rounded-full border border-[#d8dee9] bg-[#eef1f6] p-1">
+                  {[
+                    { id: 'active', label: 'Aktiv' },
+                    { id: 'expired', label: 'Abgelaufen' },
+                    { id: 'all', label: 'Alle' },
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setShareFilter(f.id)}
+                      className={
+                        shareFilter === f.id
+                          ? 'rounded-full bg-[#49a99b] px-2.5 py-0.5 text-[11px] font-medium text-white'
+                          : 'rounded-full px-2.5 py-0.5 text-[11px] font-medium text-studiio-muted hover:bg-white/70'
+                      }
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {shareCodesLoading ? (
+                <p className="mt-2 text-xs text-studiio-muted">Codes werden geladen …</p>
+              ) : shareCodesError ? (
+                <p className="mt-2 text-xs text-red-700">{shareCodesError}</p>
+              ) : filteredShareCodes.length === 0 ? (
+                <p className="mt-2 text-xs text-studiio-muted">Noch keine Codes erstellt.</p>
+              ) : (
+                <ul className="mt-2 space-y-2 max-h-44 overflow-auto pr-1">
+                  {filteredShareCodes.map((item) => {
+                    const expired = item.expires_at ? new Date(item.expires_at).getTime() < Date.now() : false
+                    const active = item.is_active && !expired
+                    const daysLeft = item.expires_at
+                      ? Math.max(0, Math.ceil((new Date(item.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+                      : null
+                    const expiringSoon = active && daysLeft != null && daysLeft <= 3
+                    const includeLabels = [
+                      item.include_subject ? 'Rahmendaten' : null,
+                      item.include_notes ? 'Notizen' : null,
+                      item.include_materials ? 'Dateien' : null,
+                      item.include_flashcards ? 'Vokabeln' : null,
+                    ].filter(Boolean).join(', ')
+                    return (
+                      <li
+                        key={item.id}
+                        className={`rounded-lg border bg-white px-3 py-2 ${
+                          expiringSoon ? 'border-amber-300 bg-amber-50/40' : 'border-studiio-lavender/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold tracking-wider text-studiio-ink">{item.share_code}</p>
+                            {item.code_label && (
+                              <p className="text-[11px] text-studiio-muted truncate">{item.code_label}</p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[11px] font-medium ${active ? 'text-emerald-700' : 'text-studiio-muted'}`}>
+                              {active ? 'Aktiv' : expired ? 'Abgelaufen' : 'Inaktiv'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyShareCode(item.share_code)}
+                              className="rounded border border-studiio-lavender/60 px-2 py-0.5 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                            >
+                              {copyStatusCode === item.share_code ? 'Kopiert' : 'Kopieren'}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-studiio-muted">
+                          Gültig bis: {item.expires_at ? new Date(item.expires_at).toLocaleDateString('de-DE') : '—'}
+                        </p>
+                        {expiringSoon && (
+                          <p className="text-[11px] font-medium text-amber-700">
+                            Läuft bald ab ({daysLeft} {daysLeft === 1 ? 'Tag' : 'Tage'}).
+                          </p>
+                        )}
+                        <p className="text-[11px] text-studiio-muted truncate">{includeLabels}</p>
+                        {active && (
+                          <div className="mt-1.5 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleDeactivateShareCode(item.id)}
+                              className="rounded border border-studiio-lavender/60 px-2 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                            >
+                              Deaktivieren
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button type="button" onClick={cancelShare} className="rounded-md border border-studiio-lavender/70 px-3 py-1.5 text-sm font-medium text-studiio-muted hover:bg-studiio-lavender/30">
+                Schließen
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateShareCode}
+                disabled={shareLoading}
+                className="rounded-md bg-studiio-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-studiio-accentHover disabled:opacity-60"
+              >
+                {shareLoading ? 'Erstellt …' : 'Code generieren'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4" onClick={() => setImportOpen(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-studiio-lavender/40 bg-white p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-studiio-ink">Fach importieren</h3>
+            <p className="mt-1 text-sm text-studiio-muted">Code eingeben und Inhalte übernehmen.</p>
+            <div className="mt-2 rounded-lg border border-studiio-lavender/40 bg-[#f8f6fc] px-3 py-2">
+              <p className="text-xs text-studiio-muted">
+                Kein Code vorhanden? Öffne in <span className="font-medium text-studiio-ink">Meine Fächer</span> den
+                Bearbeitungsmodus und klicke beim gewünschten Fach auf <span className="font-medium text-studiio-ink">Teilen</span>,
+                dann auf <span className="font-medium text-studiio-ink">Code generieren</span>.
+              </p>
+            </div>
+            <input
+              type="text"
+              value={importCode}
+              onChange={(e) => {
+                setImportCode(e.target.value.toUpperCase())
+                setImportPreview(null)
+              }}
+              placeholder="z. B. A7K9P2Q8"
+              className="studiio-input mt-3 w-full"
+            />
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={handlePreviewImportCode}
+                disabled={importPreviewLoading}
+                className="rounded border border-studiio-lavender/60 px-2.5 py-1 text-xs font-medium text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-60"
+              >
+                {importPreviewLoading ? 'Prüft …' : 'Code prüfen'}
+              </button>
+            </div>
+            {importPreview && (
+              <div className="mt-2 rounded-lg border border-studiio-lavender/50 bg-studiio-sky/20 px-3 py-2">
+                <p className="text-sm font-medium text-studiio-ink">{importPreview.subjectName}</p>
+                {importPreview.codeLabel && (
+                  <p className="text-xs text-studiio-muted">{importPreview.codeLabel}</p>
+                )}
+                <p className="mt-1 text-xs text-studiio-muted">
+                  Gültig bis: {importPreview.expiresAt ? new Date(importPreview.expiresAt).toLocaleDateString('de-DE') : '—'}
+                </p>
+                <p className="text-xs text-studiio-muted">
+                  Enthält: {[
+                    importPreview.includeSubject ? 'Rahmendaten' : null,
+                    importPreview.includeNotes ? (importPreview.hasNotes ? 'Notizen' : 'Notizen (leer)') : null,
+                    importPreview.includeMaterials ? `${importPreview.materialCount || 0} Dateien` : null,
+                    importPreview.includeFlashcards ? `${importPreview.flashcardCount || 0} Vokabeln` : null,
+                  ].filter(Boolean).join(' • ')}
+                </p>
+              </div>
+            )}
+            {importError && <p className="mt-2 text-xs text-red-700">{importError}</p>}
+            {importSuccess && <p className="mt-2 text-xs text-emerald-700">{importSuccess}</p>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setImportOpen(false)} className="rounded-md border border-studiio-lavender/70 px-3 py-1.5 text-sm font-medium text-studiio-muted hover:bg-studiio-lavender/30">
+                Schließen
+              </button>
+              <button
+                type="button"
+                onClick={handleImportByCode}
+                disabled={importLoading}
+                className="rounded-md bg-studiio-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-studiio-accentHover disabled:opacity-60"
+              >
+                {importLoading ? 'Importiert …' : 'Importieren'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLearningPlanSection && (
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <LearningPlan
@@ -407,10 +1018,6 @@ export default function DashboardSubjects({
             </div>
 
             <div className="mt-3 space-y-2.5">
-              <div className="flex items-center justify-between rounded-lg bg-white/40 px-3 py-2">
-                <p className="text-sm text-studiio-muted">Erledigt</p>
-                <p className="text-lg font-semibold text-studiio-ink">{todayStats.completed}</p>
-              </div>
               <div className="flex items-center justify-between rounded-lg bg-white/40 px-3 py-2">
                 <p className="text-sm text-studiio-muted">Gelernt</p>
                 <p className="text-lg font-semibold text-studiio-ink">{formatLearningTime(todayStats.learnedSeconds)}</p>
@@ -455,27 +1062,42 @@ export default function DashboardSubjects({
               {subjects.length} {subjects.length === 1 ? 'Fach' : 'Fächer'} angelegt
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setManageMode((prev) => {
-                const next = !prev
-                if (!next) {
-                  cancelEdit()
-                  cancelDelete()
-                }
-                return next
-              })
-            }}
-            className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#7c6b9e] to-[#8b79af] text-white px-3 py-1.5 text-sm font-medium shadow-sm hover:brightness-95"
-          >
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15 text-base leading-none">
-              {manageMode ? '×' : '✎'}
-            </span>
-            <span className="hidden sm:inline">
-              {manageMode ? 'Bearbeiten beenden' : 'Fächer bearbeiten'}
-            </span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setImportOpen(true)
+                setImportError('')
+                setImportSuccess('')
+                setImportPreview(null)
+                setImportCode('')
+              }}
+              className="inline-flex items-center gap-2 rounded-full border border-studiio-lavender/60 bg-white px-3 py-1.5 text-sm font-medium text-studiio-ink hover:bg-studiio-sky/20"
+            >
+              Fach importieren
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setManageMode((prev) => {
+                  const next = !prev
+                  if (!next) {
+                    cancelEdit()
+                    cancelDelete()
+                  }
+                  return next
+                })
+              }}
+              className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[#7c6b9e] to-[#8b79af] text-white px-3 py-1.5 text-sm font-medium shadow-sm hover:brightness-95"
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/15 text-base leading-none">
+                {manageMode ? '×' : '✎'}
+              </span>
+              <span className="hidden sm:inline">
+                {manageMode ? 'Bearbeiten beenden' : 'Fächer bearbeiten'}
+              </span>
+            </button>
+          </div>
         </div>
         {manageMode && (
           <>
@@ -675,20 +1297,36 @@ export default function DashboardSubjects({
                           </button>
                         )}
                         {manageMode && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              startEdit(subject)
-                            }}
-                            className="rounded-md border bg-white px-3 py-1.5 text-sm font-medium hover:bg-[#f8f8f6]"
-                            style={{
-                              borderColor: `${getAccentByIndex(index)}66`,
-                              color: '#3f3b36',
-                            }}
-                          >
-                            Bearbeiten
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                startEdit(subject)
+                              }}
+                              className="rounded-md border bg-white px-3 py-1.5 text-sm font-medium hover:bg-[#f8f8f6]"
+                              style={{
+                                borderColor: `${getAccentByIndex(index)}66`,
+                                color: '#3f3b36',
+                              }}
+                            >
+                              Bearbeiten
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                startShare(subject)
+                              }}
+                              className="rounded-md border bg-white px-3 py-1.5 text-sm font-medium hover:bg-[#f8f8f6]"
+                              style={{
+                                borderColor: `${getAccentByIndex(index)}66`,
+                                color: '#3f3b36',
+                              }}
+                            >
+                              Teilen
+                            </button>
+                          </>
                         )}
                       </div>
                     </article>

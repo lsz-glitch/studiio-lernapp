@@ -21,22 +21,51 @@ export default function SubjectProgressMini({ user, subject, onProgress, accentC
       try {
         const { count: matCount } = await supabase
           .from('materials')
-          .select('*', { count: 'exact', head: true })
+          .select('id', { count: 'exact', head: true })
           .eq('user_id', user.id)
           .eq('subject_id', subject.id)
+          .is('deleted_at', null)
         if (!mounted) return
         setMaterialsTotal(matCount ?? 0)
+
+        const { data: activeMaterials } = await supabase
+          .from('materials')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .is('deleted_at', null)
+        if (!mounted) return
+        const activeMaterialIds = new Set((activeMaterials || []).map((m) => m.id))
 
         const { data: flashcardsData } = await supabase
           .from('flashcards')
           .select('id, material_id')
           .eq('user_id', user.id)
           .eq('subject_id', subject.id)
+          .eq('is_draft', false)
         if (!mounted) return
         const cards = flashcardsData || []
         setCardsTotal(cards.length)
-        const materialIdsWithCards = new Set(cards.map((c) => c.material_id).filter(Boolean))
-        setMaterialsDone(materialIdsWithCards.size)
+        const materialIdsWithCards = new Set(
+          cards
+            .map((c) => c.material_id)
+            .filter((id) => Boolean(id) && activeMaterialIds.has(id)),
+        )
+
+        const { data: tutorDoneRows } = await supabase
+          .from('tutor_progress')
+          .select('material_id')
+          .eq('user_id', user.id)
+          .eq('subject_id', subject.id)
+          .eq('is_completed', true)
+        if (!mounted) return
+        const materialIdsWithTutorDone = new Set(
+          (tutorDoneRows || [])
+            .map((r) => r.material_id)
+            .filter((id) => Boolean(id) && activeMaterialIds.has(id)),
+        )
+        const doneBoth = Array.from(materialIdsWithCards).filter((id) => materialIdsWithTutorDone.has(id))
+        setMaterialsDone(doneBoth.length)
 
         if (cards.length === 0) {
           setCardsLearned(0)

@@ -78,6 +78,7 @@ const materialTextCache = new Map()
 const materialPageContextCache = new Map()
 const MATERIAL_CONTEXT_VERSION = 1
 const MAX_PAGE_CHARS = 7000
+const shareRateLimit = new Map()
 
 function normalizeProvider(raw) {
   const p = String(raw || '').trim().toLowerCase()
@@ -188,6 +189,68 @@ async function callAiText({ provider, apiKey, model, maxTokens, system, userCont
     ...out,
     text: out?.data?.content?.[0]?.text || '',
   }
+}
+
+function generateShareCode(length = 10) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let out = ''
+  for (let i = 0; i < length; i++) {
+    out += chars[Math.floor(Math.random() * chars.length)]
+  }
+  return out
+}
+
+function checkShareRateLimit({ userId, action, limit, windowMs }) {
+  if (!userId) return { ok: false, retryAfterSec: 60 }
+  const key = `${userId}:${action}`
+  const now = Date.now()
+  const entry = shareRateLimit.get(key) || { count: 0, resetAt: now + windowMs }
+  if (now > entry.resetAt) {
+    entry.count = 0
+    entry.resetAt = now + windowMs
+  }
+  if (entry.count >= limit) {
+    const retryAfterSec = Math.max(1, Math.ceil((entry.resetAt - now) / 1000))
+    shareRateLimit.set(key, entry)
+    return { ok: false, retryAfterSec }
+  }
+  entry.count += 1
+  shareRateLimit.set(key, entry)
+  return { ok: true, retryAfterSec: 0 }
+}
+
+async function copyMaterialToUser({ sourceMaterial, targetUserId, targetSubjectId }) {
+  const oldPath = sourceMaterial.storage_path
+  if (!oldPath) throw new Error('Material ohne storage_path kann nicht kopiert werden.')
+
+  const { data: fileBlob, error: downloadErr } = await supabaseServerClient.storage
+    .from('materials')
+    .download(oldPath)
+  if (downloadErr) throw new Error(`Material-Download fehlgeschlagen: ${downloadErr.message}`)
+
+  const safeFilename = String(sourceMaterial.filename || 'datei.pdf').replace(/\s+/g, '_')
+  const newPath = `${targetUserId}/${targetSubjectId}/${Date.now()}_${safeFilename}`
+
+  const { error: uploadErr } = await supabaseServerClient.storage
+    .from('materials')
+    .upload(newPath, fileBlob, { upsert: false, cacheControl: '3600' })
+  if (uploadErr) throw new Error(`Material-Upload fehlgeschlagen: ${uploadErr.message}`)
+
+  const { data: inserted, error: insertErr } = await supabaseServerClient
+    .from('materials')
+    .insert({
+      user_id: targetUserId,
+      subject_id: targetSubjectId,
+      filename: sourceMaterial.filename,
+      category: sourceMaterial.category || null,
+      size_bytes: sourceMaterial.size_bytes || 0,
+      storage_path: newPath,
+    })
+    .select('id')
+    .single()
+  if (insertErr) throw new Error(`Material-Metadaten speichern fehlgeschlagen: ${insertErr.message}`)
+
+  return inserted.id
 }
 
 async function extractPdfTextFromStoragePath(storagePath) {
@@ -563,21 +626,68 @@ app.post('/api/generate-flashcards', async (req, res) => {
       pdfText,
       focusAttention,
       focusTheme,
+      forceFormat,
+      verbatimMode: verbatimModeInput,
     } = req.body || {}
     if (!apiKey || !pdfText) {
       return res.status(400).json({ error: 'apiKey und pdfText sind erforderlich.' })
     }
     const attention = focusAttention || ''
     const focus = focusTheme || ''
+    const userPreferenceText = `${attention}\n${focus}`.toLowerCase()
+
+    function detectForcedFormat(text) {
+      const t = String(text || '').toLowerCase()
+      const wantsSingle = /\bsingle\s*choice\b|\bsingle_choice\b|\bsc\b/.test(t)
+      const wantsMultiple = /\bmultiple\s*choice\b|\bmultiple_choice\b|\bmcq\b|\bmc\b/.test(t)
+      const wantsOpen = /\boffen(es|e|er)?\b|\bopen\b|\bfreitext\b/.test(t)
+      const wantsDefinition = /\bdefinition\b|\bdefinitions\b/.test(t)
+      const matches = [wantsSingle, wantsMultiple, wantsOpen, wantsDefinition].filter(Boolean).length
+      if (matches !== 1) return null
+      if (wantsSingle) return 'single_choice'
+      if (wantsMultiple) return 'multiple_choice'
+      if (wantsOpen) return 'open'
+      if (wantsDefinition) return 'definition'
+      return null
+    }
+
+    function detectVerbatimMode(text) {
+      const t = String(text || '').toLowerCase()
+      return (
+        /\b1:1\b/.test(t) ||
+        /\beins\s*zu\s*eins\b/.test(t) ||
+        /\bidentisch\b/.test(t) ||
+        /\bwortw(ö|oe)rtlich\b/.test(t) ||
+        /\b(übernimm|uebernimm)\b/.test(t)
+      )
+    }
+
+    const forcedFormatFromPrompt = detectForcedFormat(userPreferenceText)
+    const forcedFormat = ['definition', 'open', 'multiple_choice', 'single_choice'].includes(forceFormat)
+      ? forceFormat
+      : forcedFormatFromPrompt
+    const verbatimMode = typeof verbatimModeInput === 'boolean'
+      ? verbatimModeInput
+      : detectVerbatimMode(userPreferenceText)
+
+    const formatRule = forcedFormat
+      ? `- WICHTIG: Nutze ausschließlich das Format "${forcedFormat}" für alle Karten.`
+      : '- Mische die Formate (nicht nur eine Sorte).'
+    const verbatimRule = verbatimMode
+      ? '- WICHTIG: Übernimm Fragen, Antwortoptionen und vorhandene Erklärungen 1:1 aus dem gegebenen Text. Keine Umformulierung, keine Ergänzung an vorhandenen Erklärungen. Wenn zu einer Frage keine Erklärung im Text vorhanden ist, erstelle selbst eine kurze, inhaltlich hilfreiche Erklärung.'
+      : '- question und answer sind klar und auf Deutsch.'
 
     const system = `Du erstellst Vokabeln/Karteikarten als JSON-Array für die Lern-App Studiio.
 Regeln:
 - Antworte NUR mit einem gültigen JSON-Array, sonst nichts.
-- Jedes Element hat: "format", "question", "answer", und bei multiple_choice/single_choice zusätzlich "options" (Array von Strings).
+- Jedes Element hat: "format", "question", "answer", "general_explanation" und bei multiple_choice/single_choice zusätzlich "options" (Array von Strings).
 - format ist genau einer von: definition, open, multiple_choice, single_choice.
 - Alle Inhalte aus dem gegebenen Text müssen abgedeckt werden (keine Lücken).
-- Mische die Formate (nicht nur eine Sorte). Pro Thema/Konzept 1–2 Karten.
-- question und answer sind klar und auf Deutsch. options bei MC/SC: 3–4 Optionen, answer muss exakt eine Option sein.`
+${formatRule}
+${verbatimRule}
+- Pro Thema/Konzept 1–2 Karten.
+- options bei MC/SC: 3–4 Optionen, answer muss exakt eine Option sein.
+- general_explanation muss inhaltlich hilfreich sein (2–4 Sätze): kurz erklären, warum die Antwort fachlich stimmt und einen kleinen Lernhinweis geben.`
 
     const userContent = `Fach: ${subjectName || 'Unbekannt'}
 Datei: ${materialFilename || 'Unbekannt'}
@@ -615,15 +725,253 @@ ${String(pdfText).slice(0, 80000)}
       return res.status(500).json({ error: 'KI konnte keine gültigen Karten erzeugen.', raw: text.slice(0, 500) })
     }
     const allowed = ['definition', 'open', 'multiple_choice', 'single_choice']
+    const normalizeFormat = (raw) => {
+      const v = String(raw || '').trim().toLowerCase()
+      if (v === 'single_choice' || v === 'single choice' || v === 'singlechoice' || v === 'sc') return 'single_choice'
+      if (v === 'multiple_choice' || v === 'multiple choice' || v === 'multiplechoice' || v === 'mcq' || v === 'mc') return 'multiple_choice'
+      if (v === 'definition' || v === 'def') return 'definition'
+      if (v === 'open' || v === 'open_text' || v === 'open text' || v === 'text') return 'open'
+      return v
+    }
+
+    function extractExplanationFromRawCard(rawCard) {
+      if (!rawCard || typeof rawCard !== 'object') return ''
+      const directKeys = [
+        'general_explanation',
+        'explanation',
+        'rationale',
+        'reason',
+        'begruendung',
+        'begründung',
+        'erklaerung',
+        'erklärung',
+      ]
+      for (const k of directKeys) {
+        const value = String(rawCard[k] || '').trim()
+        if (value) return value
+      }
+      return ''
+    }
+
+    function normalizeCompact(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+
+    function extractVerbatimExplanationFromSource({ question, answer, options, sourceText }) {
+      const src = String(sourceText || '')
+      if (!src.trim()) return ''
+
+      const normalizedQuestion = normalizeCompact(question)
+      if (!normalizedQuestion) return ''
+
+      // 1) Frage im Originaltext lokalisieren (robust über gekürzte Signatur)
+      const qSig = normalizedQuestion.slice(0, 60)
+      const srcNorm = normalizeCompact(src)
+      const sigIdxNorm = srcNorm.indexOf(qSig)
+      if (sigIdxNorm < 0) return ''
+
+      // Mapping Norm-Index -> Originalindex (grob, aber ausreichend für diesen Zweck)
+      const tokens = String(src || '').split(/\s+/)
+      let rebuild = ''
+      let approxOriginalIdx = 0
+      for (let i = 0; i < tokens.length; i += 1) {
+        const t = tokens[i]
+        const next = rebuild ? `${rebuild} ${t.toLowerCase()}` : t.toLowerCase()
+        if (next.length >= sigIdxNorm) {
+          approxOriginalIdx = Math.max(0, src.indexOf(t))
+          break
+        }
+        rebuild = next
+      }
+      const tail = src.slice(approxOriginalIdx)
+
+      // 2) Richtige-Antwort-Label finden
+      const optionList = Array.isArray(options) ? options.map((o) => String(o || '').trim()) : []
+      const answerText = String(answer || '').trim()
+      const answerLetter = (() => {
+        const idx = optionList.findIndex((o) => o === answerText)
+        if (idx < 0 || idx > 25) return ''
+        return String.fromCharCode(65 + idx) // A, B, C...
+      })()
+
+      const escapedAnswerText = answerText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const answerPattern = answerLetter
+        ? new RegExp(`Richtige\\s*Antwort\\s*:\\s*(?:${answerLetter}|${escapedAnswerText})\\s*\\n?([\\s\\S]*)`, 'i')
+        : new RegExp(`Richtige\\s*Antwort\\s*:\\s*(?:${escapedAnswerText}|[A-Z])\\s*\\n?([\\s\\S]*)`, 'i')
+
+      const match = tail.match(answerPattern)
+      if (!match) return ''
+
+      // 3) Erklärung bis zur nächsten Frage nehmen
+      const afterAnswer = String(match[1] || '').trim()
+      if (!afterAnswer) return ''
+      const nextQuestionIdx = afterAnswer.search(/\n\s*Frage\s+\d+\s*:/i)
+      const rawExplanation = (nextQuestionIdx >= 0 ? afterAnswer.slice(0, nextQuestionIdx) : afterAnswer).trim()
+      if (!rawExplanation) return ''
+
+      // Sehr kurze/rauschige Treffer verwerfen
+      if (rawExplanation.length < 20) return ''
+      return rawExplanation
+    }
+
+    function extractVerbatimExplanationByQuestionBlock({ question, answer, options, sourceText }) {
+      const src = String(sourceText || '')
+      if (!src.trim()) return ''
+      const qNorm = normalizeCompact(question)
+      if (!qNorm) return ''
+
+      const parts = src.split(/\n(?=\s*Frage\s+\d+\s*:)/i).filter(Boolean)
+      const answerText = String(answer || '').trim()
+      const optionList = Array.isArray(options) ? options.map((o) => String(o || '').trim()) : []
+      const answerLetter = (() => {
+        const idx = optionList.findIndex((o) => o === answerText)
+        if (idx < 0 || idx > 25) return ''
+        return String.fromCharCode(65 + idx)
+      })()
+
+      for (const part of parts) {
+        const partNorm = normalizeCompact(part)
+        if (!partNorm) continue
+        // Frage-Match: erster relevanter Teil der Frage muss im Block vorkommen.
+        const qSig = qNorm.slice(0, 80)
+        if (!partNorm.includes(qSig)) continue
+
+        const escapedAnswerText = answerText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const answerPattern = answerLetter
+          ? new RegExp(`Richtige\\s*Antwort\\s*:\\s*(?:${answerLetter}|${escapedAnswerText})\\s*\\n?([\\s\\S]*)`, 'i')
+          : new RegExp(`Richtige\\s*Antwort\\s*:\\s*(?:${escapedAnswerText}|[A-Z])\\s*\\n?([\\s\\S]*)`, 'i')
+        const match = part.match(answerPattern)
+        if (!match) continue
+        const explanation = String(match[1] || '').trim()
+        if (explanation.length >= 20) return explanation
+      }
+      return ''
+    }
+
+    function buildFallbackExplanation({ format, question, answer, options }) {
+      const q = String(question || '').trim()
+      const a = String(answer || '').trim()
+      if (format === 'multiple_choice' || format === 'single_choice') {
+        return (
+          `Korrekt ist "${a}". ` +
+          `Entscheidend ist bei "${q}" der fachliche Ursache-Wirkung-Zusammenhang. ` +
+          'Lernhinweis: Achte darauf, welche Größe sich ändert und welche im Vergleich konstant bleibt.'
+        )
+      }
+      if (format === 'definition') {
+        return (
+          `Diese Karte prüft den Kernbegriff aus "${q}". ` +
+          `Wichtig ist, dass du die Bedeutung von "${a}" nicht nur auswendig kennst, ` +
+          'sondern auch in eigenen Worten erklären kannst.'
+        )
+      }
+      if (format === 'open') {
+        return (
+          `Bei dieser offenen Frage ist "${a}" die zentrale inhaltliche Aussage. ` +
+          'Für eine gute Antwort solltest du den Begriff korrekt benennen und kurz begründen, warum er hier passt.'
+        )
+      }
+      return `Die korrekte Antwort ist "${a}", weil sie den inhaltlichen Kern der Frage trifft.`
+    }
+
     cards = cards
-      .filter((c) => c && allowed.includes(c.format) && c.question && c.answer)
-      .map((c, i) => ({
-        format: c.format,
-        question: String(c.question).trim(),
-        answer: String(c.answer).trim(),
-        options: Array.isArray(c.options) ? c.options.map((o) => String(o).trim()) : (c.format === 'multiple_choice' || c.format === 'single_choice' ? [c.answer] : null),
+      .filter((c) => c && c.question && c.answer)
+      .map((c) => {
+        let format = normalizeFormat(c.format)
+        if (forcedFormat) format = forcedFormat
+        if (!allowed.includes(format)) return null
+        let answer = String(c.answer).trim()
+        let explanationFromAnswerBlock = ''
+        // Falls die KI Antwort + Erklärung in ein Feld schreibt, splitten wir robust:
+        // erste Zeile = Antwort, Rest = allgemeine Erklärung.
+        if (answer.includes('\n')) {
+          const lines = answer.split(/\r?\n/).map((s) => s.trim())
+          const first = lines[0] || ''
+          const rest = lines.slice(1).join(' ').trim()
+          if (first && rest && rest.length >= 20) {
+            answer = first
+            explanationFromAnswerBlock = rest
+          }
+        }
+        let options = null
+        if (format === 'multiple_choice' || format === 'single_choice') {
+          const rawOptions = Array.isArray(c.options) ? c.options.map((o) => String(o).trim()).filter(Boolean) : []
+          const withAnswer = rawOptions.includes(answer) ? rawOptions : [answer, ...rawOptions]
+          const unique = Array.from(new Set(withAnswer)).slice(0, 4)
+          options = unique.length >= 2 ? unique : fallbackMcqOptions(answer)
+        }
+        const parsedExplanation = extractExplanationFromRawCard(c) || explanationFromAnswerBlock
+        const sourceExplanation = verbatimMode
+          ? extractVerbatimExplanationFromSource({
+              question: c.question,
+              answer,
+              options,
+              sourceText: pdfText,
+            })
+          : ''
+        const sourceExplanationByBlock = verbatimMode && !sourceExplanation
+          ? extractVerbatimExplanationByQuestionBlock({
+              question: c.question,
+              answer,
+              options,
+              sourceText: pdfText,
+            })
+          : ''
+        const finalExplanation = parsedExplanation || sourceExplanation || sourceExplanationByBlock
+        return {
+          format,
+          question: String(c.question).trim(),
+          answer,
+          options,
+          // In 1:1-Modus: vorhandene Erklärung strikt übernehmen;
+          // nur wenn wirklich keine da ist, eine hilfreiche Erklärung ergänzen.
+          general_explanation: finalExplanation || buildFallbackExplanation({
+            format,
+            question: c.question,
+            answer,
+            options,
+          }),
+        }
+      })
+      .filter(Boolean)
+      .map((c, i) => ({ ...c, position: i }))
+
+    // Robuster Fallback: falls KI-Output formal unbrauchbar war, trotzdem Karten erzeugen.
+    if (cards.length === 0) {
+      // Bei explizitem 1:1-Wunsch lieber transparent fehlschlagen statt künstliche Karten zu erfinden.
+      if (verbatimMode) {
+        return res.status(422).json({
+          error: 'Es konnten keine 1:1-Karten aus dem Blatt extrahiert werden.',
+          details: 'Bitte Prompt etwas präzisieren (z. B. Kapitel/Seitenbereich oder gewünschte Anzahl).',
+        })
+      }
+      const chunks = String(pdfText)
+        .split(/\n{2,}/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 30)
+        .slice(0, 6)
+      cards = chunks.map((chunk, i) => ({
+        format: i % 2 === 0 ? 'definition' : 'open',
+        question: `Was ist die Kernaussage von Abschnitt ${i + 1}?`,
+        answer: chunk.slice(0, 260),
+        options: null,
+        general_explanation: 'Die Kernaussage dieses Abschnitts sollte in eigenen Worten erklärt werden. Achte auf Fachbegriffe und den Zusammenhang zum Thema.',
         position: i,
       }))
+      if (cards.length === 0) {
+        cards = [{
+          format: 'definition',
+          question: `Nenne einen zentralen Punkt aus ${materialFilename || 'dieser Datei'}.`,
+          answer: 'Kernaussage aus dem Inhalt zusammenfassen.',
+          options: null,
+          general_explanation: 'Ziel ist, den wichtigsten inhaltlichen Punkt präzise und verständlich zusammenzufassen.',
+          position: 0,
+        }]
+      }
+    }
 
     return res.status(200).json({ cards })
   } catch (err) {
@@ -638,8 +986,15 @@ app.post('/api/evaluate-answer', async (req, res) => {
     if (!apiKey || !question || correctAnswer == null || !userAnswer) {
       return res.status(400).json({ error: 'apiKey, question, correctAnswer und userAnswer sind erforderlich.' })
     }
-    const system = 'Du bewertest Lern-Antworten. Antworte NUR mit einem JSON-Objekt in dieser Form: {"correct": true oder false, "feedback": "Ein kurzer Satz auf Deutsch."} Kein anderer Text.'
-    const userContent = `Frage: ${question}\nRichtige Antwort: ${correctAnswer}\nAntwort des/der Lernenden: ${userAnswer}\n\nIst die Antwort inhaltlich richtig (auch wenn anders formuliert)? JSON mit "correct" und "feedback".`
+    const system =
+      'Du bewertest Lern-Antworten. Antworte NUR mit einem JSON-Objekt in dieser Form: ' +
+      '{"correct": true oder false, "quality": "again|hard|good|easy", "feedback": "Ein kurzer Satz auf Deutsch."} Kein anderer Text.'
+    const userContent =
+      `Frage: ${question}\nRichtige Antwort: ${correctAnswer}\nAntwort des/der Lernenden: ${userAnswer}\n\n` +
+      'Bewerte inhaltlich (auch bei anderer Formulierung). ' +
+      'quality-Regeln: again = falsch oder wesentliche Lücke, hard = knapp richtig mit Unsicherheit/Lücken, ' +
+      'good = klar richtig, easy = vollständig + präzise + sicher. ' +
+      'Gib NUR JSON mit correct, quality, feedback zurück.'
     const out = await callAiText({
       provider,
       apiKey,
@@ -653,12 +1008,17 @@ app.post('/api/evaluate-answer', async (req, res) => {
     }
     const text = (out.text || '').trim()
     const jsonMatch = text.match(/\{[\s\S]*\}/)
-    let result = { correct: false, feedback: 'Bewertung konnte nicht gelesen werden.' }
+    let result = { correct: false, quality: 'again', feedback: 'Bewertung konnte nicht gelesen werden.' }
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0])
+        const qualityRaw = String(parsed.quality || '').toLowerCase()
+        const quality = ['again', 'hard', 'good', 'easy'].includes(qualityRaw)
+          ? qualityRaw
+          : (!!parsed.correct ? 'good' : 'again')
         result = {
           correct: !!parsed.correct,
+          quality,
           feedback: typeof parsed.feedback === 'string' ? parsed.feedback : result.feedback,
         }
       } catch (_) {}
@@ -721,6 +1081,401 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
   } catch (err) {
     console.error('[Studiio Backend] suggest-mcq-options:', err.message || err)
     return res.status(200).json({ options: fallbackMcqOptions(correctAnswer) })
+  }
+})
+
+app.post('/api/subject-share/create', async (req, res) => {
+  try {
+    const {
+      ownerUserId,
+      subjectId,
+      codeLabel,
+      includeSubject = true,
+      includeNotes = true,
+      includeMaterials = true,
+      includeFlashcards = true,
+    } = req.body || {}
+
+    if (!ownerUserId || !subjectId) {
+      return res.status(400).json({ error: 'ownerUserId und subjectId sind erforderlich.' })
+    }
+    const rl = checkShareRateLimit({
+      userId: ownerUserId,
+      action: 'share-create',
+      limit: 10,
+      windowMs: 60 * 1000,
+    })
+    if (!rl.ok) {
+      return res.status(429).json({ error: 'Zu viele Code-Erstellungen. Bitte kurz warten.', retryAfterSec: rl.retryAfterSec })
+    }
+    if (!includeSubject && !includeNotes && !includeMaterials && !includeFlashcards) {
+      return res.status(400).json({ error: 'Mindestens ein Bereich muss ausgewählt sein.' })
+    }
+
+    const { data: subject, error: subjectErr } = await supabaseServerClient
+      .from('subjects')
+      .select('id')
+      .eq('id', subjectId)
+      .eq('user_id', ownerUserId)
+      .maybeSingle()
+    if (subjectErr || !subject) {
+      return res.status(404).json({ error: 'Fach wurde nicht gefunden oder gehört nicht zum Nutzer.' })
+    }
+
+    let shareCode = generateShareCode(10)
+    for (let i = 0; i < 4; i++) {
+      const { data: existing } = await supabaseServerClient
+        .from('subject_share_exports')
+        .select('id')
+        .eq('share_code', shareCode)
+        .maybeSingle()
+      if (!existing) break
+      shareCode = generateShareCode(10)
+    }
+
+    const { data, error } = await supabaseServerClient
+      .from('subject_share_exports')
+      .insert({
+        owner_user_id: ownerUserId,
+        source_subject_id: subjectId,
+        share_code: shareCode,
+        code_label: String(codeLabel || '').trim() || null,
+        include_subject: !!includeSubject,
+        include_notes: !!includeNotes,
+        include_materials: !!includeMaterials,
+        include_flashcards: !!includeFlashcards,
+        is_active: true,
+        expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      })
+      .select('id, share_code, code_label, include_subject, include_notes, include_materials, include_flashcards, created_at, expires_at')
+      .single()
+    if (error) return res.status(500).json({ error: 'Share-Code konnte nicht erstellt werden.', details: error.message })
+
+    return res.status(200).json({ export: data })
+  } catch (err) {
+    console.error('[subject-share/create] Fehler:', err)
+    return res.status(500).json({ error: 'Share-Code konnte nicht erstellt werden.', details: err.message })
+  }
+})
+
+app.post('/api/subject-share/preview', async (req, res) => {
+  try {
+    const { code } = req.body || {}
+    const normalizedCode = String(code || '').trim().toUpperCase()
+    if (!normalizedCode) {
+      return res.status(400).json({ error: 'code ist erforderlich.' })
+    }
+    const { data: exportRow, error: exportErr } = await supabaseServerClient
+      .from('subject_share_exports')
+      .select('*')
+      .eq('share_code', normalizedCode)
+      .eq('is_active', true)
+      .maybeSingle()
+    if (exportErr || !exportRow) {
+      return res.status(404).json({ error: 'Code nicht gefunden oder nicht mehr aktiv.' })
+    }
+    if (exportRow.expires_at && new Date(exportRow.expires_at).getTime() < Date.now()) {
+      return res.status(410).json({ error: 'Dieser Code ist abgelaufen.' })
+    }
+    const { data: sourceSubject } = await supabaseServerClient
+      .from('subjects')
+      .select('id, name')
+      .eq('id', exportRow.source_subject_id)
+      .eq('user_id', exportRow.owner_user_id)
+      .maybeSingle()
+    if (!sourceSubject) {
+      return res.status(404).json({ error: 'Quellfach nicht gefunden.' })
+    }
+
+    let materialCount = 0
+    let flashcardCount = 0
+    let hasNotes = false
+    if (exportRow.include_materials) {
+      const { count } = await supabaseServerClient
+        .from('materials')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', exportRow.owner_user_id)
+        .eq('subject_id', sourceSubject.id)
+        .is('deleted_at', null)
+      materialCount = count || 0
+    }
+    if (exportRow.include_flashcards) {
+      const { count } = await supabaseServerClient
+        .from('flashcards')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', exportRow.owner_user_id)
+        .eq('subject_id', sourceSubject.id)
+      flashcardCount = count || 0
+    }
+    if (exportRow.include_notes) {
+      const { data: noteRow } = await supabaseServerClient
+        .from('subject_notes')
+        .select('subject_id')
+        .eq('user_id', exportRow.owner_user_id)
+        .eq('subject_id', sourceSubject.id)
+        .maybeSingle()
+      hasNotes = !!noteRow
+    }
+
+    return res.status(200).json({
+      preview: {
+        code: exportRow.share_code,
+        codeLabel: exportRow.code_label || null,
+        subjectName: sourceSubject.name,
+        expiresAt: exportRow.expires_at || null,
+        includeSubject: !!exportRow.include_subject,
+        includeNotes: !!exportRow.include_notes,
+        includeMaterials: !!exportRow.include_materials,
+        includeFlashcards: !!exportRow.include_flashcards,
+        materialCount,
+        flashcardCount,
+        hasNotes,
+      },
+    })
+  } catch (err) {
+    console.error('[subject-share/preview] Fehler:', err)
+    return res.status(500).json({ error: 'Code-Vorschau fehlgeschlagen.', details: err.message })
+  }
+})
+
+app.post('/api/subject-share/import', async (req, res) => {
+  try {
+    const { importerUserId, code, mergeTargetSubjectId } = req.body || {}
+    const normalizedCode = String(code || '').trim().toUpperCase()
+    if (!importerUserId || !normalizedCode) {
+      return res.status(400).json({ error: 'importerUserId und code sind erforderlich.' })
+    }
+    const rl = checkShareRateLimit({
+      userId: importerUserId,
+      action: 'share-import',
+      limit: 20,
+      windowMs: 60 * 1000,
+    })
+    if (!rl.ok) {
+      return res.status(429).json({ error: 'Zu viele Import-Versuche. Bitte kurz warten.', retryAfterSec: rl.retryAfterSec })
+    }
+
+    const { data: exportRow, error: exportErr } = await supabaseServerClient
+      .from('subject_share_exports')
+      .select('*')
+      .eq('share_code', normalizedCode)
+      .eq('is_active', true)
+      .maybeSingle()
+    if (exportErr || !exportRow) {
+      return res.status(404).json({ error: 'Code nicht gefunden oder nicht mehr aktiv.' })
+    }
+    if (exportRow.expires_at && new Date(exportRow.expires_at).getTime() < Date.now()) {
+      return res.status(410).json({ error: 'Dieser Code ist abgelaufen.' })
+    }
+    if (exportRow.owner_user_id === importerUserId) {
+      return res.status(400).json({ error: 'Du kannst deinen eigenen Code nicht importieren.' })
+    }
+    const { data: existingImport } = await supabaseServerClient
+      .from('subject_share_imports')
+      .select('id')
+      .eq('export_id', exportRow.id)
+      .eq('importer_user_id', importerUserId)
+      .maybeSingle()
+    if (existingImport) {
+      return res.status(409).json({ error: 'Diesen Code hast du bereits importiert.' })
+    }
+
+    const { data: sourceSubject, error: sourceErr } = await supabaseServerClient
+      .from('subjects')
+      .select('id, name, group_label, exam_date')
+      .eq('id', exportRow.source_subject_id)
+      .eq('user_id', exportRow.owner_user_id)
+      .maybeSingle()
+    if (sourceErr || !sourceSubject) {
+      return res.status(404).json({ error: 'Quellfach nicht gefunden.' })
+    }
+
+    let isMergeImport = false
+    let targetSubject = null
+    if (mergeTargetSubjectId) {
+      const { data: mergeTarget, error: mergeTargetErr } = await supabaseServerClient
+        .from('subjects')
+        .select('id, name, group_label, exam_date')
+        .eq('id', mergeTargetSubjectId)
+        .eq('user_id', importerUserId)
+        .maybeSingle()
+      if (mergeTargetErr || !mergeTarget) {
+        return res.status(404).json({ error: 'Ziel-Fach zum Zusammenlegen wurde nicht gefunden.' })
+      }
+      targetSubject = mergeTarget
+      isMergeImport = true
+    } else {
+      const subjectName = (sourceSubject.name || 'Geteiltes Fach').trim()
+      const importedName = subjectName.length > 70 ? `${subjectName.slice(0, 70)} …` : `${subjectName} (geteilt)`
+      const { data: newSubject, error: newSubjectErr } = await supabaseServerClient
+        .from('subjects')
+        .insert({
+          user_id: importerUserId,
+          name: importedName,
+          group_label: exportRow.include_subject ? sourceSubject.group_label : null,
+          exam_date: exportRow.include_subject ? sourceSubject.exam_date : null,
+        })
+        .select('id, name, group_label, exam_date')
+        .single()
+      if (newSubjectErr) {
+        return res.status(500).json({ error: 'Ziel-Fach konnte nicht erstellt werden.', details: newSubjectErr.message })
+      }
+      targetSubject = newSubject
+    }
+
+    const materialIdMap = new Map()
+    let copiedMaterials = 0
+    let failedMaterials = 0
+    const failedMaterialNames = []
+    if (exportRow.include_materials) {
+      const { data: sourceMaterials, error: listErr } = await supabaseServerClient
+        .from('materials')
+        .select('id, filename, category, size_bytes, storage_path')
+        .eq('user_id', exportRow.owner_user_id)
+        .eq('subject_id', sourceSubject.id)
+        .is('deleted_at', null)
+      if (listErr) {
+        return res.status(500).json({ error: 'Materialien konnten nicht geladen werden.', details: listErr.message })
+      }
+      for (const m of sourceMaterials || []) {
+        try {
+          const newMaterialId = await copyMaterialToUser({
+            sourceMaterial: m,
+            targetUserId: importerUserId,
+            targetSubjectId: targetSubject.id,
+          })
+          materialIdMap.set(m.id, newMaterialId)
+          copiedMaterials += 1
+        } catch (copyErr) {
+          console.error('[subject-share/import] Material-Kopie fehlgeschlagen:', copyErr)
+          failedMaterials += 1
+          if (m?.filename) failedMaterialNames.push(String(m.filename))
+        }
+      }
+    }
+
+    if (exportRow.include_notes) {
+      try {
+        const { data: sourceNote } = await supabaseServerClient
+          .from('subject_notes')
+          .select('content')
+          .eq('user_id', exportRow.owner_user_id)
+          .eq('subject_id', sourceSubject.id)
+          .maybeSingle()
+        const incoming = String(sourceNote?.content || '').trim()
+        if (incoming) {
+          let nextContent = incoming
+          if (isMergeImport) {
+            const { data: existingNote } = await supabaseServerClient
+              .from('subject_notes')
+              .select('content')
+              .eq('user_id', importerUserId)
+              .eq('subject_id', targetSubject.id)
+              .maybeSingle()
+            const current = String(existingNote?.content || '').trim()
+            if (current && current !== incoming) {
+              nextContent = `${current}\n\n---\n\n${incoming}`
+            } else if (current === incoming) {
+              nextContent = current
+            }
+          }
+          await supabaseServerClient
+            .from('subject_notes')
+            .upsert(
+              {
+                user_id: importerUserId,
+                subject_id: targetSubject.id,
+                content: nextContent,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'user_id,subject_id' },
+            )
+        }
+      } catch (noteErr) {
+        console.error('[subject-share/import] Notizen kopieren fehlgeschlagen:', noteErr)
+      }
+    }
+
+    let copiedFlashcards = 0
+    if (exportRow.include_flashcards) {
+      let startPosition = 0
+      if (isMergeImport) {
+        const { data: lastCard } = await supabaseServerClient
+          .from('flashcards')
+          .select('position')
+          .eq('user_id', importerUserId)
+          .eq('subject_id', targetSubject.id)
+          .order('position', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        startPosition = Number(lastCard?.position || 0) + 1
+      }
+      const { data: sourceCards, error: cardsErr } = await supabaseServerClient
+        .from('flashcards')
+        .select('format, question, answer, options, position, material_id, general_explanation')
+        .eq('user_id', exportRow.owner_user_id)
+        .eq('subject_id', sourceSubject.id)
+        .order('position', { ascending: true })
+      if (cardsErr) {
+        return res.status(500).json({ error: 'Vokabeln konnten nicht geladen werden.', details: cardsErr.message })
+      }
+      const rows = (sourceCards || []).map((c) => ({
+        user_id: importerUserId,
+        subject_id: targetSubject.id,
+        material_id:
+          exportRow.include_materials && c.material_id
+            ? (materialIdMap.get(c.material_id) || null)
+            : null,
+        format: c.format,
+        question: c.question,
+        answer: c.answer,
+        options: c.options || null,
+        position: startPosition + Number(c.position || 0),
+        general_explanation: c.general_explanation || null,
+      }))
+
+      if (rows.length > 0) {
+        const { error: insertCardsErr } = await supabaseServerClient
+          .from('flashcards')
+          .insert(rows)
+        if (insertCardsErr) {
+          return res.status(500).json({ error: 'Vokabeln konnten nicht kopiert werden.', details: insertCardsErr.message })
+        }
+      }
+      copiedFlashcards = rows.length
+    }
+
+    await supabaseServerClient
+      .from('subject_share_exports')
+      .update({
+        import_count: Number(exportRow.import_count || 0) + 1,
+        last_used_at: new Date().toISOString(),
+      })
+      .eq('id', exportRow.id)
+
+    await supabaseServerClient
+      .from('subject_share_imports')
+      .insert({
+        export_id: exportRow.id,
+        importer_user_id: importerUserId,
+        new_subject_id: targetSubject.id,
+      })
+
+    return res.status(200).json({
+      subject: targetSubject,
+      mergedIntoExisting: isMergeImport,
+      copied: {
+        materials: copiedMaterials,
+        failedMaterials,
+        failedMaterialNames: failedMaterialNames.slice(0, 5),
+        flashcards: copiedFlashcards,
+        notes: !!exportRow.include_notes,
+        subjectMeta: !!exportRow.include_subject && !isMergeImport,
+      },
+    })
+  } catch (err) {
+    console.error('[subject-share/import] Fehler:', err)
+    return res.status(500).json({ error: 'Import fehlgeschlagen.', details: err.message })
   }
 })
 

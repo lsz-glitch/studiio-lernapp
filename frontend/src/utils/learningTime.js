@@ -3,9 +3,12 @@
  */
 
 import { supabase } from '../supabaseClient'
+import { recordStreakActivity } from './streak'
 
 const TABLE = 'user_learning_time'
 const DAILY_SECONDS_PREFIX = 'studiio_daily_learning_seconds_'
+const DAILY_STREAK_MARK_PREFIX = 'studiio_daily_streak_marked_'
+const STREAK_THRESHOLD_SECONDS = 180
 
 function getTodayLocalKey() {
   const d = new Date()
@@ -19,12 +22,15 @@ function getTodayLocalKey() {
 export async function addLearningTime(userId, subjectId, secondsToAdd) {
   if (!userId || !subjectId || secondsToAdd <= 0) return
   const roundedSeconds = Math.round(secondsToAdd)
+  const todayKey = getTodayLocalKey()
+  let newDailySeconds = 0
 
   // Zusätzlich lokal den Tageswert führen, damit das Dashboard "heute gelernt" zeigen kann.
   if (typeof window !== 'undefined') {
-    const key = `${DAILY_SECONDS_PREFIX}${getTodayLocalKey()}`
+    const key = `${DAILY_SECONDS_PREFIX}${todayKey}`
     const currentDaily = Number(window.localStorage.getItem(key) || 0)
-    window.localStorage.setItem(key, String(currentDaily + roundedSeconds))
+    newDailySeconds = currentDaily + roundedSeconds
+    window.localStorage.setItem(key, String(newDailySeconds))
   }
 
   const { data: row, error: fetchErr } = await supabase
@@ -55,6 +61,16 @@ export async function addLearningTime(userId, subjectId, secondsToAdd) {
     )
 
   if (upsertErr) console.error('Lernzeit: Speichern fehlgeschlagen', upsertErr)
+
+  // Streak-Regel: Erst ab 3 Minuten Lernzeit pro Tag +1 (maximal einmal pro Tag).
+  if (typeof window !== 'undefined' && newDailySeconds >= STREAK_THRESHOLD_SECONDS) {
+    const markKey = `${DAILY_STREAK_MARK_PREFIX}${todayKey}`
+    const alreadyMarked = window.localStorage.getItem(markKey) === '1'
+    if (!alreadyMarked) {
+      const ok = await recordStreakActivity(userId)
+      if (ok) window.localStorage.setItem(markKey, '1')
+    }
+  }
 }
 
 /**

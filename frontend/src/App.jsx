@@ -165,7 +165,7 @@ function App() {
       <div className="min-h-screen bg-studiio-cream text-studiio-ink flex flex-col items-center justify-center px-4 py-8">
         <header className="text-center mb-8">
           <h1 className="studiio-logo text-3xl md:text-4xl">Studiio</h1>
-          <p className="text-studiio-muted mt-1">Lernen mit KI</p>
+          <p className="text-studiio-muted mt-1">Dein smarter Lernraum für echte Fortschritte.</p>
         </header>
         <main className="w-full max-w-sm rounded-2xl border border-studiio-lavender/40 bg-white/80 shadow-sm p-6 md:p-8">
           <h2 className="text-xl font-semibold text-studiio-ink mb-4 text-center">

@@ -6,10 +6,11 @@ import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT
 import { getUserAiConfig } from '../utils/aiProvider'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
-export default function FlashcardAddManualModal({ user, subject, currentCardCount = 0, onClose, onSuccess }) {
+export default function FlashcardAddManualModal({ user, subject, materialOptions = [], currentCardCount = 0, onClose, onSuccess }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState('')
   const [format, setFormat] = useState('definition')
+  const [materialId, setMaterialId] = useState('')
   const [optionsText, setOptionsText] = useState('') // Zeile pro Option für MC/SC
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -96,7 +97,7 @@ export default function FlashcardAddManualModal({ user, subject, currentCardCoun
       const row = {
         user_id: user.id,
         subject_id: subject.id,
-        material_id: null,
+        material_id: materialId || null,
         format,
         question: question.trim(),
         answer: answer.trim(),
@@ -124,6 +125,23 @@ export default function FlashcardAddManualModal({ user, subject, currentCardCoun
         <p className="text-sm text-studiio-muted mb-4">Fach: {subject.name}</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-studiio-ink mb-1">Unterordner / Datei</label>
+            <select
+              value={materialId}
+              onChange={(e) => setMaterialId(e.target.value)}
+              className="w-full rounded-lg border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
+              disabled={loading}
+            >
+              <option value="">Eigener Unterordner (manuell)</option>
+              {materialOptions.map((m) => (
+                <option key={m.id} value={m.id}>{m.filename}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-studiio-muted">
+              Wähle eine Datei, wenn die Karte zu einer bestimmten Vorlesung gehört. Sonst bleibt sie im manuellen Unterordner.
+            </p>
+          </div>
           <div>
             <label className="block text-sm font-medium text-studiio-ink mb-1">Frage</label>
             <textarea
