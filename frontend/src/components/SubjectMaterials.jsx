@@ -38,6 +38,9 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
   const [quickDraftCards, setQuickDraftCards] = useState([])
   const [quickDraftExpanded, setQuickDraftExpanded] = useState(false)
   const [editingDraftCard, setEditingDraftCard] = useState(null)
+  const [vocabCountsByMaterial, setVocabCountsByMaterial] = useState({})
+  const [manualVocabCount, setManualVocabCount] = useState(0)
+  const [vocabByDocumentExpanded, setVocabByDocumentExpanded] = useState(false)
 
   const [totalBytes, setTotalBytes] = useState(0)
   const [completedTutorMaterialIds, setCompletedTutorMaterialIds] = useState(new Set())
@@ -138,6 +141,35 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       })
     return () => { mounted = false }
   }, [user.id, subject.id, refreshTrigger])
+
+  useEffect(() => {
+    if (!subject?.id || !user?.id) return
+    let mounted = true
+    ;(async () => {
+      const { data, error } = await supabase
+        .from('flashcards')
+        .select('id, material_id')
+        .eq('user_id', user.id)
+        .eq('subject_id', subject.id)
+        .eq('is_draft', false)
+      if (!mounted) return
+      if (error) {
+        console.error('Vokabeln pro Dokument konnten nicht geladen werden:', error)
+        setVocabCountsByMaterial({})
+        setManualVocabCount(0)
+        return
+      }
+      const counts = {}
+      let manualCount = 0
+      for (const row of data || []) {
+        if (row.material_id) counts[row.material_id] = (counts[row.material_id] || 0) + 1
+        else manualCount += 1
+      }
+      setVocabCountsByMaterial(counts)
+      setManualVocabCount(manualCount)
+    })()
+    return () => { mounted = false }
+  }, [user?.id, subject?.id, refreshTrigger, deletingMaterialId])
 
   useEffect(() => {
     let mounted = true
@@ -686,6 +718,59 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
             )})}
 
             <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setVocabByDocumentExpanded((v) => !v)}
+                className="mb-1 w-full flex items-center justify-between rounded-lg border border-[#c9d8f7] bg-[#e8eefc] px-3 py-1.5 text-left hover:brightness-[0.98]"
+              >
+                <div>
+                  <h6 className="text-sm font-semibold text-studiio-ink">
+                    Vokabeln nach Dokument
+                  </h6>
+                  <p className="text-[11px] text-studiio-muted">
+                    Nur die Karten einer einzelnen Datei üben
+                  </p>
+                </div>
+                <span className="text-sm text-studiio-muted ml-2">{vocabByDocumentExpanded ? '▾' : '▸'}</span>
+              </button>
+              {vocabByDocumentExpanded && (
+                <ul className="mb-2 space-y-1">
+                  {materials.map((m) => {
+                    const count = vocabCountsByMaterial[m.id] || 0
+                    return (
+                      <li key={`vocab-doc-${m.id}`} className="rounded-lg border border-studiio-lavender/40 bg-white/90 px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="min-w-0 truncate text-xs font-medium text-studiio-ink">{m.filename}</p>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-studiio-lavender/25 px-2 py-0.5 text-[11px] font-medium text-studiio-ink">
+                              {count} Karte{count === 1 ? '' : 'n'}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={!count}
+                              onClick={() => onStartPractice?.({ id: m.id, filename: m.filename })}
+                              className="rounded border border-studiio-lavender/60 px-2.5 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              Nur diese üben
+                            </button>
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  })}
+                  {manualVocabCount > 0 && (
+                    <li className="rounded-lg border border-studiio-lavender/40 bg-white/90 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-medium text-studiio-ink">Manuell erstellte Karten</p>
+                        <span className="rounded-full bg-studiio-lavender/25 px-2 py-0.5 text-[11px] font-medium text-studiio-ink">
+                          {manualVocabCount} Karte{manualVocabCount === 1 ? '' : 'n'}
+                        </span>
+                      </div>
+                    </li>
+                  )}
+                </ul>
+              )}
+
               <button
                 type="button"
                 onClick={() => setQuickDraftExpanded((v) => !v)}

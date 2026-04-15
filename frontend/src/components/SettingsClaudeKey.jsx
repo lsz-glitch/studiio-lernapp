@@ -14,6 +14,8 @@ import {
  * - Neu: JSON-String { provider, apiKey }
  */
 export default function SettingsClaudeKey({ user }) {
+  const EXISTING_KEY_HINT =
+    'Ein KI API Key ist bereits im Profil hinterlegt. Du kannst ihn hier überschreiben oder löschen.'
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [nameSaving, setNameSaving] = useState(false)
@@ -24,6 +26,9 @@ export default function SettingsClaudeKey({ user }) {
   const [error, setError] = useState('')
   const [showHelp, setShowHelp] = useState(false)
   const [provider, setProvider] = useState(DEFAULT_AI_PROVIDER)
+  const [shareCodes, setShareCodes] = useState([])
+  const [shareCodesLoading, setShareCodesLoading] = useState(true)
+  const [copyStatus, setCopyStatus] = useState('')
 
   const providerOptions = [
     { value: 'anthropic', label: 'Anthropic (Claude)' },
@@ -74,7 +79,7 @@ export default function SettingsClaudeKey({ user }) {
       if (cfg?.apiKey) {
         // Sicherheits-Hinweis: Wir zeigen den echten Key nicht im Klartext an.
         setKeyValue('') // Eingabefeld bleibt leer
-        setMessage('Ein KI API Key ist bereits im Profil hinterlegt. Du kannst ihn hier überschreiben oder löschen.')
+        setMessage(EXISTING_KEY_HINT)
       }
 
       setLoading(false)
@@ -85,6 +90,50 @@ export default function SettingsClaudeKey({ user }) {
       isMounted = false
     }
   }, [user.id])
+
+  useEffect(() => {
+    let mounted = true
+    async function loadShareCodes() {
+      setShareCodesLoading(true)
+      const { data, error: err } = await supabase
+        .from('subject_share_exports')
+        .select('id, code, code_label, created_at, expires_at, is_active, subject:subjects(name)')
+        .eq('owner_user_id', user.id)
+        .order('created_at', { ascending: false })
+
+      if (!mounted) return
+      if (err) {
+        console.error('Fehler beim Laden der Share-Codes:', err)
+        setShareCodes([])
+        setShareCodesLoading(false)
+        return
+      }
+      setShareCodes(data || [])
+      setShareCodesLoading(false)
+    }
+    loadShareCodes()
+    return () => {
+      mounted = false
+    }
+  }, [user.id])
+
+  function formatDate(value) {
+    if (!value) return '—'
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return '—'
+    return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  }
+
+  async function handleCopyCode(code) {
+    if (!code) return
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopyStatus(code)
+      window.setTimeout(() => setCopyStatus(''), 1200)
+    } catch (_) {
+      setError('Code konnte nicht kopiert werden. Bitte manuell markieren.')
+    }
+  }
 
   async function handleSaveName(e) {
     e.preventDefault()
@@ -189,46 +238,20 @@ export default function SettingsClaudeKey({ user }) {
           {error}
         </p>
       )}
-      {message && (
+      {message && message !== EXISTING_KEY_HINT && (
         <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
           {message}
         </p>
       )}
 
-      <form onSubmit={handleSave} className="space-y-4 max-w-lg">
+      <form onSubmit={handleSave} className="space-y-4 max-w-3xl">
         <div className="rounded-xl border border-studiio-lavender/40 bg-white p-4">
-          <h3 className="text-sm font-semibold text-studiio-ink mb-3">Profil</h3>
-          <div className="space-y-3">
-            <div>
-              <label htmlFor="display-name" className="block text-sm font-medium text-studiio-ink mb-1">
-                Dein Name
-              </label>
-              <input
-                id="display-name"
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="z. B. Lena"
-                className="studiio-input w-full"
-              />
-              <p className="mt-1 text-xs text-studiio-muted">
-                Dieser Name wird z. B. in deiner Begrüßung im Dashboard angezeigt.
-              </p>
-            </div>
-            <div>
-              <button
-                type="button"
-                onClick={handleSaveName}
-                disabled={nameSaving}
-                className="rounded-lg border border-studiio-lavender/70 px-4 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-60"
-              >
-                {nameSaving ? 'Wird gespeichert …' : 'Name speichern'}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div>
+          <h3 className="text-sm font-semibold text-studiio-ink mb-3">KI Einstellungen</h3>
+          {message === EXISTING_KEY_HINT && (
+            <p className="mb-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              {message}
+            </p>
+          )}
           <label htmlFor="ai-provider" className="block text-sm font-medium text-studiio-ink mb-1">
             KI Anbieter
           </label>
@@ -285,19 +308,84 @@ export default function SettingsClaudeKey({ user }) {
           <p className="mt-1 text-xs text-studiio-muted">
             Hinweis: Aus Sicherheitsgründen wird ein bereits gespeicherter Key hier nicht im Klartext angezeigt.
           </p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button type="submit" disabled={saving} className="studiio-btn-primary">
+              {saving ? 'Wird gespeichert …' : 'KI API Key speichern'}
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={deleting}
+              className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
+            >
+              {deleting ? 'Wird gelöscht …' : 'Key löschen'}
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-3">
-          <button type="submit" disabled={saving} className="studiio-btn-primary">
-            {saving ? 'Wird gespeichert …' : 'KI API Key speichern'}
-          </button>
-          <button
-            type="button"
-            onClick={handleDelete}
-            disabled={deleting}
-            className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
-          >
-            {deleting ? 'Wird gelöscht …' : 'Key löschen'}
-          </button>
+
+        <div className="rounded-xl border border-studiio-lavender/40 bg-white p-4">
+          <h3 className="text-sm font-semibold text-studiio-ink mb-3">Geteilte Codes</h3>
+          {shareCodesLoading ? (
+            <p className="text-sm text-studiio-muted">Codes werden geladen …</p>
+          ) : shareCodes.length === 0 ? (
+            <p className="text-sm text-studiio-muted">Du hast noch keine Codes erstellt.</p>
+          ) : (
+            <ul className="space-y-2">
+              {shareCodes.slice(0, 12).map((item) => {
+                const expired = item.expires_at ? new Date(item.expires_at).getTime() < Date.now() : false
+                const subjectName = item?.subject?.name || 'Fach'
+                return (
+                  <li key={item.id} className="rounded-lg border border-studiio-lavender/50 bg-studiio-sky/10 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-studiio-ink truncate">
+                        {item.code_label?.trim() || subjectName}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyCode(item.code)}
+                        className="rounded border border-studiio-lavender/70 bg-white px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-lavender/20"
+                      >
+                        {copyStatus === item.code ? 'Kopiert' : 'Kopieren'}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-xs text-studiio-muted">
+                      {item.code} · Ablauf: {formatDate(item.expires_at)} · {expired ? 'Abgelaufen' : item.is_active ? 'Aktiv' : 'Deaktiviert'}
+                    </p>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-studiio-lavender/30 bg-white/70 p-3">
+          <h3 className="text-sm font-semibold text-studiio-ink mb-2">Profil</h3>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label htmlFor="display-name" className="block text-sm font-medium text-studiio-ink mb-1">
+                Name
+              </label>
+              <input
+                id="display-name"
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="z. B. Lena"
+                className="studiio-input w-full"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleSaveName}
+              disabled={nameSaving}
+              className="rounded-lg border border-studiio-lavender/70 px-4 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-60"
+            >
+              {nameSaving ? 'Speichert …' : 'Name speichern'}
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-studiio-muted">
+            Das musst du normalerweise nur selten anpassen.
+          </p>
         </div>
       </form>
     </section>

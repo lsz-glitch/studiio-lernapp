@@ -71,7 +71,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
   }, [card, onCardChange])
 
   function getDefaultGeneralExplanation(targetCard) {
-    return 'Stark gemacht! Wenn du magst, ergänze hier eine eigene Erklärung.'
+    return 'Wenn du magst, ergänze hier eine eigene Erklärung.'
   }
 
   useEffect(() => {

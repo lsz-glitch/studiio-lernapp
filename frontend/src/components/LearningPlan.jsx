@@ -7,7 +7,7 @@ const TASK_TYPES = [
   { value: 'tutor', label: 'Datei mit Tutor durcharbeiten' },
   { value: 'vocab', label: 'Vokabeln eines Fachs durcharbeiten' },
   { value: 'exam', label: 'Klausur bearbeiten' },
-  { value: 'manual', label: 'Eigener Task (manuell)' },
+  { value: 'manual', label: 'Eigene Aufgabe (manuell)' },
 ]
 
 function formatTaskTime(scheduledAt) {
@@ -19,6 +19,10 @@ const WEEKDAY_LABELS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag
 const WEEK_VIEW_OPTIONS = [
   { value: 'timeline', label: 'Timeline' },
   { value: 'extended', label: 'Erweitert' },
+]
+const REPEAT_OPTIONS = [
+  { value: 'none', label: 'Keine Wiederholung' },
+  { value: 'interval', label: 'Intervall' },
 ]
 
 function formatDayShort(dateStr) {
@@ -62,6 +66,13 @@ function toLocalDateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+function getNextFullHourDate() {
+  const d = new Date()
+  d.setMinutes(0, 0, 0)
+  d.setHours(d.getHours() + 1)
+  return d
+}
+
 /** Montag der aktuellen Woche (YYYY-MM-DD) */
 function getCurrentWeekMonday() {
   const d = new Date()
@@ -102,6 +113,36 @@ function normalizeText(value) {
   return String(value || '').toLocaleLowerCase('de-DE').trim()
 }
 
+function buildRecurringSchedule(baseDate, repeatRule, occurrenceCount, everyValue, everyUnit, infinite = false) {
+  const dates = []
+  const start = new Date(baseDate)
+  if (Number.isNaN(start.getTime())) return [baseDate]
+
+  if (repeatRule === 'none') return [start]
+
+  if (repeatRule === 'interval') {
+    const safeEvery = Math.max(1, Math.min(365, Number(everyValue) || 1))
+    const stepDays = everyUnit === 'weeks' ? safeEvery * 7 : safeEvery
+    const safeCount = infinite
+      ? Math.max(2, Math.min(730, Math.ceil(365 / stepDays) + 1))
+      : Math.max(1, Math.min(365, Number(occurrenceCount) || 1))
+    for (let i = 0; i < safeCount; i++) {
+      const d = new Date(start)
+      d.setDate(d.getDate() + i * stepDays)
+      dates.push(d)
+    }
+    return dates
+  }
+
+  return [start]
+}
+
+function isMissingDescriptionColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('description') && msg.includes('column'))
+}
+
 export default function LearningPlan({ user, subjects, onOpenSubject, onStartPractice, onOpenTutor, refreshTrigger }) {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -113,7 +154,14 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [scheduledDate, setScheduledDate] = useState('')
-  const [scheduledTime, setScheduledTime] = useState('09:00')
+  const [scheduledTime, setScheduledTime] = useState('')
+  const [repeatRule, setRepeatRule] = useState('none')
+  const [repeatCount, setRepeatCount] = useState(6)
+  const [repeatEvery, setRepeatEvery] = useState(2)
+  const [repeatUnit, setRepeatUnit] = useState('days')
+  const [repeatInfinite, setRepeatInfinite] = useState(false)
+  const [editApplyScope, setEditApplyScope] = useState('single') // single | future
+  const [editingSeriesCount, setEditingSeriesCount] = useState(1)
   const [saving, setSaving] = useState(false)
   const [completingId, setCompletingId] = useState(null)
   const [editingTask, setEditingTask] = useState(null)
@@ -132,7 +180,25 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
       .eq('user_id', user.id)
       .order('scheduled_at', { ascending: true })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
+        // Fallback für ältere DBs ohne "description"-Spalte.
+        if (error && isMissingDescriptionColumn(error)) {
+          const retry = await supabase
+            .from('learning_plan_tasks')
+            .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
+            .eq('user_id', user.id)
+            .order('scheduled_at', { ascending: true })
+          if (!mounted) return
+          if (retry.error) {
+            console.error('Lernplan laden:', retry.error)
+            setTasks([])
+            setLoading(false)
+            return
+          }
+          setTasks((retry.data || []).map((t) => ({ ...t, description: null })))
+          setLoading(false)
+          return
+        }
         if (!mounted) return
         if (error) {
           console.error('Lernplan laden:', error)
@@ -222,11 +288,20 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setTitle('')
     setDescription('')
     setScheduledDate('')
-    setScheduledTime('09:00')
+    setScheduledTime('')
+    setRepeatRule('none')
+    setRepeatCount(6)
+    setRepeatEvery(2)
+    setRepeatUnit('days')
+    setRepeatInfinite(false)
+    setEditApplyScope('single')
+    setEditingSeriesCount(1)
     setShowForm(false)
   }
 
-  function startEdit(task) {
+  async function startEdit(task) {
+    setEditApplyScope('single')
+    setEditingSeriesCount(1)
     setType(task.type)
     setSubjectId(task.subject_id || '')
     setMaterialId(task.material_id || '')
@@ -234,23 +309,59 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setDescription(task.description || '')
     setScheduledDate(task.scheduled_at ? task.scheduled_at.slice(0, 10) : '')
     setScheduledTime(task.scheduled_at ? task.scheduled_at.slice(11, 16) : '09:00')
+    setRepeatRule('none')
+    setRepeatCount(1)
+    setRepeatEvery(2)
+    setRepeatUnit('days')
+    setRepeatInfinite(false)
     setEditingTask(task)
     setShowForm(true)
+    try {
+      let q = supabase
+        .from('learning_plan_tasks')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('type', task.type)
+        .eq('title', task.title || '')
+        .gte('scheduled_at', task.scheduled_at)
+
+      if (task.subject_id) q = q.eq('subject_id', task.subject_id)
+      else q = q.is('subject_id', null)
+
+      if (task.material_id) q = q.eq('material_id', task.material_id)
+      else q = q.is('material_id', null)
+
+      const { count } = await q
+      setEditingSeriesCount(count || 1)
+    } catch (_) {
+      setEditingSeriesCount(1)
+    }
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
     if (!user?.id) return
-    const date = scheduledDate || new Date().toISOString().slice(0, 10)
-    const scheduledAt = new Date(`${date}T${scheduledTime}:00`).toISOString()
+    const todayKey = toLocalDateKey(new Date())
+    const date = scheduledDate || todayKey
+    let effectiveTime = (scheduledTime || '').trim()
+    if (!effectiveTime && date === todayKey) {
+      const nextHour = getNextFullHourDate()
+      effectiveTime = `${String(nextHour.getHours()).padStart(2, '0')}:00`
+    }
+    if (!effectiveTime) effectiveTime = '09:00'
+    const scheduledAt = new Date(`${date}T${effectiveTime}:00`).toISOString()
 
     let taskTitle = title.trim()
     if (type !== 'manual') {
       const sub = subjects.find((s) => s.id === subjectId)
       const subName = sub?.name || 'Fach'
       if (type === 'tutor') {
-        const mat = materials.find((m) => m.id === materialId)
-        taskTitle = mat ? `Tutor: ${mat.filename}` : `Tutor: ${subName}`
+        if (materialId === '__any_exercise__') {
+          taskTitle = `Tutor: Beliebige Übung (${subName})`
+        } else {
+          const mat = materials.find((m) => m.id === materialId)
+          taskTitle = mat ? `Tutor: ${mat.filename}` : `Tutor: ${subName}`
+        }
       } else if (type === 'vocab') taskTitle = `Vokabeln: ${subName}`
       else if (type === 'exam') taskTitle = `Klausur: ${subName}`
     }
@@ -261,14 +372,69 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
 
     setSaving(true)
     if (editingTask) {
-      const { data, error } = await updateTask(user.id, editingTask.id, {
+      const updatePayload = {
         type,
         subject_id: subjectId || null,
-        material_id: type === 'tutor' ? materialId || null : null,
+        material_id: type === 'tutor' && materialId !== '__any_exercise__' ? materialId || null : null,
         title: taskTitle,
         description: description.trim() || null,
         scheduled_at: scheduledAt,
-      })
+      }
+
+      if (editApplyScope === 'future') {
+        let q = supabase
+          .from('learning_plan_tasks')
+          .select('id, scheduled_at')
+          .eq('user_id', user.id)
+          .eq('type', editingTask.type)
+          .eq('title', editingTask.title || '')
+          .gte('scheduled_at', editingTask.scheduled_at)
+
+        if (editingTask.subject_id) q = q.eq('subject_id', editingTask.subject_id)
+        else q = q.is('subject_id', null)
+
+        if (editingTask.material_id) q = q.eq('material_id', editingTask.material_id)
+        else q = q.is('material_id', null)
+
+        const { data: futureSeries, error: futureErr } = await q
+        if (futureErr) {
+          setSaving(false)
+          console.error('Serien-Tasks laden:', futureErr)
+          return
+        }
+
+        const hhmm = effectiveTime
+        const [hh, mm] = hhmm.split(':').map(Number)
+        const updatedRows = []
+
+        for (const row of futureSeries || []) {
+          const d = new Date(row.scheduled_at)
+          d.setHours(Number.isFinite(hh) ? hh : 9, Number.isFinite(mm) ? mm : 0, 0, 0)
+          const { data: one, error: oneErr } = await updateTask(user.id, row.id, {
+            ...updatePayload,
+            scheduled_at: d.toISOString(),
+          })
+          if (oneErr) {
+            setSaving(false)
+            console.error('Serien-Task aktualisieren:', oneErr)
+            return
+          }
+          if (one) updatedRows.push(one)
+        }
+        setSaving(false)
+        if (updatedRows.length) {
+          const byId = new Map(updatedRows.map((r) => [r.id, r]))
+          setTasks((prev) =>
+            prev
+              .map((t) => (byId.has(t.id) ? byId.get(t.id) : t))
+              .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)),
+          )
+        }
+        resetForm()
+        return
+      }
+
+      const { data, error } = await updateTask(user.id, editingTask.id, updatePayload)
       setSaving(false)
       if (error) {
         console.error('Task aktualisieren:', error)
@@ -279,22 +445,46 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       return
     }
 
-    const payload = {
+    const repeatDates = buildRecurringSchedule(
+      new Date(`${date}T${effectiveTime}:00`),
+      repeatRule,
+      repeatRule === 'none' ? 1 : repeatCount,
+      repeatEvery,
+      repeatUnit,
+      repeatInfinite,
+    )
+    const payloads = repeatDates.map((d) => ({
       user_id: user.id,
       type,
       title: taskTitle,
       description: description.trim() || null,
-      scheduled_at: scheduledAt,
+      scheduled_at: d.toISOString(),
       subject_id: subjectId || null,
-      material_id: type === 'tutor' ? materialId || null : null,
+      material_id: type === 'tutor' && materialId !== '__any_exercise__' ? materialId || null : null,
+    }))
+    let { data, error } = await supabase
+      .from('learning_plan_tasks')
+      .insert(payloads)
+      .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
+    if (!Array.isArray(data) && data) data = [data]
+
+    if (error && isMissingDescriptionColumn(error)) {
+      const payloadWithoutDescription = payloads.map(({ description: _description, ...rest }) => rest)
+      const retry = await supabase
+        .from('learning_plan_tasks')
+        .insert(payloadWithoutDescription)
+        .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
+      const retryRows = Array.isArray(retry.data) ? retry.data : retry.data ? [retry.data] : []
+      data = retryRows.map((row) => ({ ...row, description: description.trim() || null }))
+      error = retry.error
     }
-    const { data, error } = await supabase.from('learning_plan_tasks').insert(payload).select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at').single()
     setSaving(false)
     if (error) {
       console.error('Task anlegen:', error)
       return
     }
-    setTasks((prev) => [...prev, data])
+    const insertedRows = Array.isArray(data) ? data : data ? [data] : []
+    setTasks((prev) => [...prev, ...insertedRows].sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)))
     resetForm()
   }
 
@@ -370,21 +560,26 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                 setTitle('')
                 setDescription('')
                 setScheduledDate('')
-                setScheduledTime('09:00')
+                setScheduledTime('')
+                setRepeatRule('none')
+                setRepeatCount(6)
+                setRepeatEvery(2)
+                setRepeatUnit('days')
+                setRepeatInfinite(false)
                 setShowForm(true)
               }
             }}
             className="inline-flex items-center gap-1.5 rounded-full bg-[#49a99b] text-white px-4 py-2 text-sm font-semibold hover:brightness-95"
           >
             <span className="text-base leading-none">+</span>
-            {showForm ? 'Schließen' : 'Task hinzufügen'}
+            {showForm ? 'Schließen' : 'Aufgabe hinzufügen'}
           </button>
         </div>
       </div>
 
       {showForm && (
         <form onSubmit={handleSubmit} className="mb-4 grid gap-3 rounded-xl border border-studiio-lavender/40 bg-studiio-sky/10 p-4">
-          {editingTask && <p className="text-sm font-medium text-studiio-ink">Task bearbeiten</p>}
+          {editingTask && <p className="text-sm font-medium text-studiio-ink">Aufgabe bearbeiten</p>}
           <div>
             <label className="block text-sm font-medium text-studiio-ink mb-1">Typ</label>
             <select value={type} onChange={(e) => setType(e.target.value)} className="studiio-input w-full">
@@ -409,6 +604,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
               <label className="block text-sm font-medium text-studiio-ink mb-1">Datei (Tutor)</label>
               <select value={materialId} onChange={(e) => setMaterialId(e.target.value)} className="studiio-input w-full">
                 <option value="">— wählen —</option>
+                <option value="__any_exercise__">Beliebige Übung durcharbeiten</option>
                 {materials.map((m) => (
                   <option key={m.id} value={m.id}>{m.filename}</option>
                 ))}
@@ -423,7 +619,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
           )}
           <div>
             <label className="block text-sm font-medium text-studiio-ink mb-1">Beschreibung (optional)</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Notiz oder Beschreibung zum Task" rows={2} className="studiio-input w-full resize-y" />
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Notiz oder Beschreibung zur Aufgabe" rows={2} className="studiio-input w-full resize-y" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -435,9 +631,100 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
               <input type="time" value={scheduledTime} onChange={(e) => setScheduledTime(e.target.value)} className="studiio-input w-full" />
             </div>
           </div>
+          {editingTask && editingSeriesCount > 1 && (
+            <div>
+              <label className="block text-sm font-medium text-studiio-ink mb-1">Änderung anwenden auf</label>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm text-studiio-ink">
+                  <input
+                    type="radio"
+                    name="edit-scope"
+                    value="single"
+                    checked={editApplyScope === 'single'}
+                    onChange={(e) => setEditApplyScope(e.target.value)}
+                  />
+                  Nur diesen Termin
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-studiio-ink">
+                  <input
+                    type="radio"
+                    name="edit-scope"
+                    value="future"
+                    checked={editApplyScope === 'future'}
+                    onChange={(e) => setEditApplyScope(e.target.value)}
+                  />
+                  Alle zukünftigen ({editingSeriesCount})
+                </label>
+              </div>
+            </div>
+          )}
+          {!editingTask && (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div>
+                <label className="block text-sm font-medium text-studiio-ink mb-1">Wiederholung</label>
+                <select value={repeatRule} onChange={(e) => setRepeatRule(e.target.value)} className="studiio-input w-full">
+                  {REPEAT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              {repeatRule === 'interval' && (
+                <div>
+                  <label className="block text-sm font-medium text-studiio-ink mb-1">Alle</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={repeatEvery}
+                    onChange={(e) => setRepeatEvery(Number(e.target.value) || 1)}
+                    className="studiio-input w-full"
+                  />
+                </div>
+              )}
+              {repeatRule === 'interval' && (
+                <div>
+                  <label className="block text-sm font-medium text-studiio-ink mb-1">Einheit</label>
+                  <select
+                    value={repeatUnit}
+                    onChange={(e) => setRepeatUnit(e.target.value)}
+                    className="studiio-input w-full"
+                  >
+                    <option value="days">Tag(e)</option>
+                    <option value="weeks">Woche(n)</option>
+                  </select>
+                </div>
+              )}
+              {repeatRule !== 'none' && !repeatInfinite && (
+                <div>
+                  <label className="block text-sm font-medium text-studiio-ink mb-1">Anzahl Termine</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={52}
+                    value={repeatCount}
+                    onChange={(e) => setRepeatCount(Number(e.target.value) || 1)}
+                    className="studiio-input w-full"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {!editingTask && repeatRule !== 'none' && (
+            <div className="rounded-lg border border-studiio-lavender/50 bg-white/70 px-3 py-2">
+              <label className="inline-flex items-center gap-2 text-sm text-studiio-ink">
+                <input
+                  type="checkbox"
+                  checked={repeatInfinite}
+                  onChange={(e) => setRepeatInfinite(e.target.checked)}
+                  className="h-4 w-4 rounded border-studiio-lavender/70 text-studiio-accent focus:ring-studiio-accent"
+                />
+                Unendlich (automatisch ca. 12 Monate im Voraus)
+              </label>
+            </div>
+          )}
           <div className="flex flex-wrap gap-2">
             <button type="submit" disabled={saving} className="studiio-btn-primary">
-              {saving ? 'Wird gespeichert …' : editingTask ? 'Änderungen speichern' : 'Task eintragen'}
+              {saving ? 'Wird gespeichert …' : editingTask ? 'Änderungen speichern' : 'Aufgabe eintragen'}
             </button>
             {editingTask && (
               <button type="button" onClick={resetForm} className="rounded-lg border border-studiio-lavender/60 px-3 py-1.5 text-sm text-studiio-ink hover:bg-studiio-sky/20">
@@ -451,7 +738,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       {loading ? (
         <p className="text-sm text-studiio-muted">Lernplan wird geladen …</p>
       ) : tasks.length === 0 ? (
-        <p className="text-sm text-studiio-muted">Noch keine Tasks. Füge einen hinzu, um deinen Lernplan zu füllen.</p>
+        <p className="text-sm text-studiio-muted">Noch keine Aufgaben. Füge eine hinzu, um deinen Lernplan zu füllen.</p>
       ) : (
         <div className="space-y-5">
           {(() => {
@@ -513,6 +800,18 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                         <p className={`truncate text-sm font-semibold text-studiio-ink ${done ? 'line-through opacity-70' : ''}`}>{getTaskTitle(task)}</p>
                         <p className="text-[11px] text-studiio-muted">{formatTaskTime(task.scheduled_at)}</p>
                       </div>
+                      {!showForm && weekView === 'extended' && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            startEdit(task)
+                          }}
+                          className="shrink-0 rounded border border-studiio-lavender/60 px-2 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                        >
+                          Bearbeiten
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -542,6 +841,17 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                               Fach öffnen
                             </button>
                           ) : null}
+                        </div>
+                      )}
+                      {!showForm && weekView === 'extended' && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-3.5" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => startEdit(task)}
+                            className="rounded border border-studiio-lavender/60 px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-sky/20"
+                          >
+                            Bearbeiten
+                          </button>
                         </div>
                       )}
                     </>
@@ -636,7 +946,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
             return (
               <div className="rounded-xl border border-studiio-lavender/40 bg-white/60 overflow-hidden">
                 <div className="bg-studiio-lavender/20 px-3 py-2 border-b border-studiio-lavender/30">
-                  <p className="text-sm font-semibold text-studiio-ink">Alle Tasks</p>
+                  <p className="text-sm font-semibold text-studiio-ink">Alle Aufgaben</p>
                 </div>
                 <ul className="divide-y divide-studiio-lavender/20">
                   {tasks.map(renderTaskRow)}

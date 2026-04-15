@@ -3,8 +3,8 @@ import { supabase } from '../supabaseClient'
 import SubjectProgressMini from './SubjectProgressMini'
 import LearningPlan from './LearningPlan'
 import { getApiBase } from '../config'
-import { getStreak, recordStreakActivity } from '../utils/streak'
-import { formatLearningTime, getTodayLearningTimeLocal } from '../utils/learningTime'
+import { getStreak } from '../utils/streak'
+import { formatLearningTime, getTodayLearningTimeDb, getTodayLearningTimeLocal } from '../utils/learningTime'
 
 function getAccentByIndex(index) {
   const accents = ['#4fb4ad', '#e2ad4f', '#9fc7a3', '#df9a96', '#9ea8c2', '#88b6dc']
@@ -50,11 +50,6 @@ function getGreetingText() {
   const hour = new Date().getHours()
   if (hour < 12) return 'Guten Morgen!'
   return 'Guten Tag!'
-}
-
-function getTodayLocalKey() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 export default function DashboardSubjects({
@@ -182,7 +177,12 @@ export default function DashboardSubjects({
 
       const planned = (data || []).length
       const completed = (data || []).filter((task) => !!task.completed_at).length
-      const learnedSeconds = getTodayLearningTimeLocal()
+      let learnedSeconds = 0
+      try {
+        learnedSeconds = await getTodayLearningTimeDb(user.id)
+      } catch (_) {
+        learnedSeconds = getTodayLearningTimeLocal()
+      }
       setTodayStats({ planned, completed, learnedSeconds })
       if (onTodayPlannedChange) onTodayPlannedChange(planned)
 
@@ -338,25 +338,11 @@ export default function DashboardSubjects({
     }
   }, [user.id])
 
-  useEffect(() => {
-    async function ensureDailyStreakFromLearningTime() {
-      if ((todayStats.learnedSeconds || 0) < 180) return
-      const today = getTodayLocalKey()
-      if (streak?.last_activity_date === today) return
-      const ok = await recordStreakActivity(user.id)
-      if (ok) {
-        const refreshed = await getStreak(user.id)
-        setStreak(refreshed || { current_streak_days: 0, last_activity_date: null })
-      }
-    }
-    ensureDailyStreakFromLearningTime()
-  }, [todayStats.learnedSeconds, streak?.last_activity_date, user.id])
-
   function getTaskTypeLabel(type) {
     if (type === 'tutor') return 'Tutor'
     if (type === 'vocab') return 'Vokabeln'
     if (type === 'exam') return 'Klausur'
-    return 'Task'
+    return 'Aufgabe'
   }
 
   const groupedSubjects = useMemo(() => {

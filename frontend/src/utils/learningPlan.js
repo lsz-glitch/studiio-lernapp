@@ -5,6 +5,12 @@ import { supabase } from '../supabaseClient'
 
 const TABLE = 'learning_plan_tasks'
 
+function isMissingDescriptionColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('description') && msg.includes('column'))
+}
+
 /** Task als erledigt markieren */
 export async function completeTask(userId, taskId) {
   if (!userId || !taskId) return
@@ -28,20 +34,36 @@ export async function uncompleteTask(userId, taskId) {
 /** Task bearbeiten (Typ, Fach, Material, Titel, Beschreibung, Datum/Uhrzeit) */
 export async function updateTask(userId, taskId, payload) {
   if (!userId || !taskId) return { error: new Error('userId und taskId nötig') }
-  const { data, error } = await supabase
+  const baseUpdate = {
+    type: payload.type,
+    subject_id: payload.subject_id || null,
+    material_id: payload.material_id ?? null,
+    title: payload.title,
+    description: payload.description ?? null,
+    scheduled_at: payload.scheduled_at,
+  }
+  let { data, error } = await supabase
     .from(TABLE)
-    .update({
-      type: payload.type,
-      subject_id: payload.subject_id || null,
-      material_id: payload.material_id ?? null,
-      title: payload.title,
-      description: payload.description ?? null,
-      scheduled_at: payload.scheduled_at,
-    })
+    .update(baseUpdate)
     .eq('id', taskId)
     .eq('user_id', userId)
     .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
     .single()
+
+  // Fallback für ältere DBs ohne "description"-Spalte.
+  if (error && isMissingDescriptionColumn(error)) {
+    const { description, ...withoutDescription } = baseUpdate
+    const retry = await supabase
+      .from(TABLE)
+      .update(withoutDescription)
+      .eq('id', taskId)
+      .eq('user_id', userId)
+      .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
+      .single()
+    data = retry.data ? { ...retry.data, description: payload.description ?? null } : null
+    error = retry.error
+  }
+
   if (error) return { error, data: null }
   return { error: null, data }
 }

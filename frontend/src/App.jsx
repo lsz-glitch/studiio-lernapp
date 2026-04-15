@@ -5,6 +5,7 @@ import RegisterForm from './components/RegisterForm'
 import SettingsClaudeKey from './components/SettingsClaudeKey'
 import DashboardSubjects from './components/DashboardSubjects'
 import SubjectDetail from './components/SubjectDetail'
+import StatisticsPage from './components/StatisticsPage'
 import './App.css'
 
 function getDisplayName(user) {
@@ -29,7 +30,7 @@ function App() {
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [authMode, setAuthMode] = useState('login') // 'login' | 'register'
-  const [activeView, setActiveView] = useState('overview') // 'overview' | 'subjects' | 'settings'
+  const [activeView, setActiveView] = useState('overview') // 'overview' | 'subjects' | 'statistics' | 'settings'
   const [selectedSubject, setSelectedSubject] = useState(null)
   const [openToPractice, setOpenToPractice] = useState(false)
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
@@ -61,8 +62,8 @@ function App() {
         const storedSubjectRaw = localStorage.getItem('studiio_last_subject')
         let restoredSubject = null
 
-        if (storedView === 'settings') {
-          setActiveView('settings')
+        if (storedView === 'settings' || storedView === 'subjects' || storedView === 'statistics') {
+          setActiveView(storedView)
         } else {
           setActiveView('overview')
         }
@@ -122,8 +123,11 @@ function App() {
   }
 
   const isOverviewRoot = activeView === 'overview' && !selectedSubject
+  const navActiveView = selectedSubject ? 'subjects' : activeView
   const headerTitle = activeView === 'settings'
     ? 'Einstellungen'
+    : activeView === 'statistics'
+      ? 'Statistiken'
     : activeView === 'subjects'
       ? 'Meine Fächer'
     : isOverviewRoot
@@ -131,6 +135,8 @@ function App() {
       : selectedSubject?.name || 'Dashboard'
   const headerSubtitle = activeView === 'settings'
     ? 'Verwalte dein Konto und deine API-Einstellungen.'
+    : activeView === 'statistics'
+      ? 'Dein Lernfortschritt auf einen Blick.'
     : activeView === 'subjects'
       ? 'Du machst das großartig, ein Fach nach dem anderen.'
     : isOverviewRoot
@@ -208,9 +214,9 @@ function App() {
                   setActiveView('overview')
                   setSelectedSubject(null)
                 }}
-                className={activeView === 'overview' ? 'rounded-full bg-[#cdeee8] px-3 py-1 font-medium text-[#245b55]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e9f4fb]'}
+                className={navActiveView === 'overview' ? 'rounded-full bg-[#cdeee8] px-3 py-1 font-medium text-[#245b55]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e9f4fb]'}
               >
-                Hauptseite
+                Lernplan
               </button>
               <button
                 type="button"
@@ -218,14 +224,24 @@ function App() {
                   setActiveView('subjects')
                   setSelectedSubject(null)
                 }}
-                className={activeView === 'subjects' ? 'rounded-full bg-[#f4e5cb] px-3 py-1 font-medium text-[#6b4c15]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#f9f2e5]'}
+                className={navActiveView === 'subjects' ? 'rounded-full bg-[#f4e5cb] px-3 py-1 font-medium text-[#6b4c15]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#f9f2e5]'}
               >
                 Fächer
               </button>
               <button
                 type="button"
+                onClick={() => {
+                  setActiveView('statistics')
+                  setSelectedSubject(null)
+                }}
+                className={navActiveView === 'statistics' ? 'rounded-full bg-[#d8ecff] px-3 py-1 font-medium text-[#23507a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e8f2fb]'}
+              >
+                Statistiken
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveView('settings')}
-                className={activeView === 'settings' ? 'rounded-full bg-[#ece0f8] px-3 py-1 font-medium text-[#5f4b7a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#efe8fb]'}
+                className={navActiveView === 'settings' ? 'rounded-full bg-[#ece0f8] px-3 py-1 font-medium text-[#5f4b7a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#efe8fb]'}
               >
                 Einstellungen
               </button>
@@ -287,6 +303,9 @@ function App() {
               showLearningPlanSection={false}
               showSubjectsSection
             />
+          )}
+          {activeView === 'statistics' && !selectedSubject && (
+            <StatisticsPage user={user} />
           )}
           {activeView === 'settings' && <SettingsClaudeKey user={user} />}
         </main>

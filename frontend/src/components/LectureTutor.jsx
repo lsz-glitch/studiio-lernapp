@@ -75,13 +75,76 @@ function stripNextMarker(raw) {
 }
 
 function extractThemeTitle(text, fallback = 'Thema') {
-  const lines = String(text || '')
+  const cleanLines = String(text || '')
     .split('\n')
-    .map((line) => line.replace(/[*#`>\-]/g, '').trim())
+    .map((line) =>
+      line
+        .replace(/[*#`>]/g, '')
+        .replace(/^\s*[-•]\s*/, '')
+        .replace(/^\s*(titel|thema|überschrift)\s*:\s*/i, '')
+        .trim(),
+    )
     .filter(Boolean)
-  const firstLine = lines.find((line) => !line.toLowerCase().includes('verständnisfrage'))
+
+  const firstLine = cleanLines.find((line) => {
+    const lowered = line.toLowerCase()
+    return !lowered.includes('verständnisfrage') && !lowered.startsWith('idealantwort')
+  })
+
   if (!firstLine) return fallback
-  return firstLine.length > 72 ? `${firstLine.slice(0, 72).trimEnd()}...` : firstLine
+  if (firstLine.length <= 64) return firstLine
+  return `${firstLine.slice(0, 64).trimEnd()}...`
+}
+
+function splitTutorQuestion(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return { mainText: '', questionText: '' }
+
+  const boldMatch = text.match(/\*\*Verständnisfrage:\*\*\s*([\s\S]*)$/i)
+  if (boldMatch) {
+    const mainText = text.slice(0, boldMatch.index).trim()
+    const questionText = (boldMatch[1] || '').trim()
+    return { mainText, questionText }
+  }
+
+  const plainMatch = text.match(/(?:^|\n)Verständnisfrage:\s*([^\n]+)\s*$/i)
+  if (plainMatch) {
+    const idx = text.toLowerCase().lastIndexOf('verständnisfrage:')
+    const mainText = idx >= 0 ? text.slice(0, idx).trim() : text
+    const questionText = (plainMatch[1] || '').trim()
+    return { mainText, questionText }
+  }
+
+  // Fallback: letzte sinnvolle Zeile/Absatz als Frage erkennen.
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  if (paragraphs.length > 1) {
+    const last = paragraphs[paragraphs.length - 1]
+    if (last.endsWith('?')) {
+      return {
+        mainText: paragraphs.slice(0, -1).join('\n\n').trim(),
+        questionText: last,
+      }
+    }
+  }
+
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  if (lines.length > 1) {
+    const lastLine = lines[lines.length - 1]
+    if (lastLine.endsWith('?')) {
+      return {
+        mainText: lines.slice(0, -1).join('\n').trim(),
+        questionText: lastLine,
+      }
+    }
+  }
+
+  return { mainText: text, questionText: '' }
 }
 
 function LectureTutorInner({ user, subject, material, onBack }) {
@@ -113,6 +176,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const [archivedThemeChats, setArchivedThemeChats] = useState([])
   const [nextThemeMode, setNextThemeMode] = useState('same') // 'same' | 'section'
   const [themeRoundInSection, setThemeRoundInSection] = useState(1)
+  const [currentThemeId, setCurrentThemeId] = useState(null)
   const [completedThemeKeys, setCompletedThemeKeys] = useState([])
   const [showSkipChoice, setShowSkipChoice] = useState(false)
   const [materialIndex, setMaterialIndex] = useState(1)
@@ -841,12 +905,14 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         }
         text = ensureExplainQuestion(text, currentStartPage, currentEndPage)
         const entry = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           startPage: currentStartPage,
           endPage: currentEndPage,
           title: extractThemeTitle(text, `Thema ${explanationHistory.length + 1}`),
           text,
           createdAt: Date.now(),
         }
+        setCurrentThemeId(entry.id)
         setExplanationHistory((prev) => {
           const next = [...prev, entry]
           setHistoryIndex(next.length - 1)
@@ -903,6 +969,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         ...prev,
         {
           id: `${Date.now()}-${prev.length + 1}`,
+          themeId: currentThemeId || explanationHistory[historyIndex]?.id || null,
           title: extractThemeTitle(
             explanationHistory[historyIndex]?.text || messages.find((m) => m.role === 'assistant')?.content || '',
             `Thema ${prev.length + 1}`,
@@ -943,6 +1010,11 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     setMessages(chat.messages || [])
     if (typeof chat.topicIndex === 'number') setTopicIndex(chat.topicIndex)
     if (typeof chat.themeRoundInSection === 'number') setThemeRoundInSection(chat.themeRoundInSection)
+    if (chat.themeId) {
+      const idx = explanationHistory.findIndex((e) => e?.id === chat.themeId)
+      if (idx >= 0) setHistoryIndex(idx)
+      setCurrentThemeId(chat.themeId)
+    }
     setCurrentTaskText(null)
     setInput('')
     setChatWindowVersion((v) => v + 1)
@@ -952,13 +1024,15 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     const nextIndex = Math.max(0, Math.min(explanationHistory.length - 1, historyIndex + delta))
     if (nextIndex === historyIndex) return
     setHistoryIndex(nextIndex)
-    const targetArchivedChat = archivedThemeChats[nextIndex]
+    const nextEntry = explanationHistory[nextIndex]
+    const targetArchivedChat = archivedThemeChats.find((chat) => chat.themeId && chat.themeId === nextEntry?.id)
     if (targetArchivedChat) {
       handleOpenArchivedTheme(targetArchivedChat)
       return
     }
-    const entry = explanationHistory[nextIndex]
+    const entry = nextEntry
     if (!entry) return
+    setCurrentThemeId(entry.id || null)
     setTopicIndex(entry.startPage)
     setMessages([{ role: 'assistant', content: entry.text }])
     setCurrentTaskText(null)
@@ -1320,9 +1394,26 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                           {m.content}
                         </div>
                       ) : (
-                        <div className="inline-block max-w-[85%] rounded-2xl bg-white text-studiio-ink px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1">
-                          <ReactMarkdown>{m.content}</ReactMarkdown>
-                        </div>
+                        (() => {
+                          const { mainText, questionText } = splitTutorQuestion(m.content)
+                          return (
+                            <div className="inline-block max-w-[85%] space-y-2">
+                              {!!mainText && (
+                                <div className="rounded-2xl bg-white text-studiio-ink px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-headings:my-1 prose-headings:text-base prose-headings:font-semibold prose-h1:text-base prose-h2:text-base prose-h3:text-base prose-h4:text-base">
+                                  <ReactMarkdown>{mainText}</ReactMarkdown>
+                                </div>
+                              )}
+                              {!!questionText && (
+                                <div className="rounded-xl border border-studiio-accent/50 bg-studiio-accent/10 px-3 py-2">
+                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-accent mb-1">
+                                    Verständnisfrage
+                                  </p>
+                                  <p className="text-sm font-medium text-studiio-ink">{questionText}</p>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })()
                       )}
                     </div>
                   ))}
@@ -1358,9 +1449,26 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                       {m.content}
                     </div>
                   ) : (
-                    <div className="inline-block max-w-[85%] rounded-2xl bg-studiio-sky/40 text-studiio-ink px-4 py-3 text-[17px] leading-relaxed prose prose-base max-w-none prose-headings:font-semibold prose-headings:text-studiio-ink prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-strong:text-studiio-ink">
-                      <ReactMarkdown>{m.content}</ReactMarkdown>
-                    </div>
+                    (() => {
+                      const { mainText, questionText } = splitTutorQuestion(m.content)
+                      return (
+                        <div className="inline-block max-w-[85%] space-y-2">
+                          {!!mainText && (
+                            <div className="rounded-2xl bg-studiio-sky/40 text-studiio-ink px-4 py-3 text-[17px] leading-relaxed prose prose-base max-w-none prose-headings:my-1 prose-headings:text-studiio-ink prose-headings:text-[18px] prose-headings:font-semibold prose-h1:text-[18px] prose-h2:text-[18px] prose-h3:text-[18px] prose-h4:text-[18px] prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-strong:font-semibold prose-strong:text-studiio-ink">
+                              <ReactMarkdown>{mainText}</ReactMarkdown>
+                            </div>
+                          )}
+                          {!!questionText && (
+                            <div className="rounded-xl border border-studiio-accent/60 bg-studiio-accent/15 px-4 py-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-studiio-accent mb-1">
+                                Verständnisfrage
+                              </p>
+                              <p className="text-base font-semibold text-studiio-ink">{questionText}</p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()
                   )}
                 </div>
               ))}
