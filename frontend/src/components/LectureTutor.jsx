@@ -227,6 +227,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             storagePath: material.storage_path,
             apiKey,
             provider,
+            userId: user.id,
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -655,7 +656,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     const response = await fetch(`${getApiBase()}/api/claude`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey, provider, payload }),
+      body: JSON.stringify({ apiKey, provider, payload, userId: user.id }),
     })
     const responseText = await response.text()
     if (!response.ok) {
@@ -723,7 +724,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       const response = await fetch(`${getApiBase()}/api/claude`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, provider, payload }),
+        body: JSON.stringify({ apiKey, provider, payload, userId: user.id }),
       })
       const responseText = await response.text()
       if (!response.ok) throw new Error('Bewertung fehlgeschlagen.')
@@ -854,7 +855,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ apiKey, provider, payload }),
+        body: JSON.stringify({ apiKey, provider, payload, userId: user.id }),
       })
 
       const responseText = await response.text()

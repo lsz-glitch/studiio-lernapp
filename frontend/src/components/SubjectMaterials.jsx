@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import FlashcardEditModal from './FlashcardEditModal'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
+import { getApiBase } from '../config'
 
 const MAX_STORAGE_PER_USER_BYTES = 20 * 1024 * 1024 // 20 MB
 
@@ -339,7 +340,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
 
       // PDF direkt nach Upload indizieren (best effort), damit Tutor später nicht erneut parsen muss.
       try {
-        await fetch('/api/index-material-text', {
+        await fetch(`${getApiBase()}/api/index-material-text`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

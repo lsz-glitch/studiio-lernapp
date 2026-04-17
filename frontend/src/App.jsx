@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react'
+import React, { Suspense, lazy, useState, useEffect } from 'react'
 import { supabase } from './supabaseClient'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
-import SettingsClaudeKey from './components/SettingsClaudeKey'
-import DashboardSubjects from './components/DashboardSubjects'
-import SubjectDetail from './components/SubjectDetail'
-import StatisticsPage from './components/StatisticsPage'
 import './App.css'
+
+const SettingsClaudeKey = lazy(() => import('./components/SettingsClaudeKey'))
+const DashboardSubjects = lazy(() => import('./components/DashboardSubjects'))
+const SubjectDetail = lazy(() => import('./components/SubjectDetail'))
+const StatisticsPage = lazy(() => import('./components/StatisticsPage'))
 
 function getDisplayName(user) {
   const metaName =
@@ -26,6 +27,32 @@ function getGreetingByHour() {
   return new Date().getHours() < 12 ? 'Guten Morgen' : 'Guten Tag'
 }
 
+function toLocalDateKey(date = new Date()) {
+  const d = new Date(date)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function getDateRangeForKey(dateKey) {
+  const start = new Date(`${dateKey}T00:00:00`)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 1)
+  return { startIso: start.toISOString(), endIso: end.toISOString() }
+}
+
+function getTaskTypeLabel(type) {
+  if (type === 'tutor') return 'Tutor'
+  if (type === 'vocab') return 'Vokabeln'
+  if (type === 'exam') return 'Klausur'
+  return 'Aufgabe'
+}
+
+function getTaskTypeBadgeClass(type) {
+  if (type === 'tutor') return 'border-teal-200 bg-teal-50 text-teal-700'
+  if (type === 'vocab') return 'border-violet-200 bg-violet-50 text-violet-700'
+  if (type === 'exam') return 'border-amber-200 bg-amber-50 text-amber-700'
+  return 'border-studiio-lavender/60 bg-white text-studiio-muted'
+}
+
 function App() {
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -35,6 +62,13 @@ function App() {
   const [openToPractice, setOpenToPractice] = useState(false)
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
   const [todayPlannedTasks, setTodayPlannedTasks] = useState(0)
+  const [carryoverModal, setCarryoverModal] = useState({
+    open: false,
+    mode: 'yesterday', // yesterday | all_open
+    tasks: [],
+    selectedIds: [],
+    loading: false,
+  })
 
   useEffect(() => {
     if (!supabase) {
@@ -122,8 +156,141 @@ function App() {
     if (supabase) await supabase.auth.signOut()
   }
 
+  useEffect(() => {
+    if (!user?.id || authLoading || !supabase) return
+    let mounted = true
+    const todayKey = toLocalDateKey()
+    const oncePerDayKey = `studiio_task_carryover_prompted_${todayKey}`
+    if (typeof window !== 'undefined' && window.localStorage.getItem(oncePerDayKey) === '1') return
+
+    async function loadCarryoverTasks() {
+      try {
+        const today = toLocalDateKey()
+        const yesterdayDate = new Date()
+        yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+        const yesterday = toLocalDateKey(yesterdayDate)
+
+        // Aktivitätszustand bestimmen: gestern aktiv => nur gestrige offenen Aufgaben.
+        // Sonst (mehrere Tage inaktiv) => alle überfälligen offenen Aufgaben.
+        const { data: streakData } = await supabase
+          .from('user_streaks')
+          .select('last_activity_date')
+          .eq('user_id', user.id)
+          .maybeSingle()
+        const lastActivity = streakData?.last_activity_date ? String(streakData.last_activity_date).slice(0, 10) : null
+        const mode = lastActivity === yesterday ? 'yesterday' : 'all_open'
+
+        let query = supabase
+          .from('learning_plan_tasks')
+          .select('id, title, type, scheduled_at, carryover_prompted_at')
+          .eq('user_id', user.id)
+          .is('completed_at', null)
+          .is('carryover_prompted_at', null)
+
+        if (mode === 'yesterday') {
+          const { startIso, endIso } = getDateRangeForKey(yesterday)
+          query = query.gte('scheduled_at', startIso).lt('scheduled_at', endIso)
+        } else {
+          const { startIso: todayStartIso } = getDateRangeForKey(today)
+          query = query.lt('scheduled_at', todayStartIso)
+        }
+
+        const { data, error } = await query.order('scheduled_at', { ascending: true })
+        if (!mounted) return
+        if (error) {
+          console.error('Übernahme-Dialog: Aufgaben laden fehlgeschlagen:', error)
+          return
+        }
+        const tasks = data || []
+        if (!tasks.length) {
+          if (typeof window !== 'undefined') window.localStorage.setItem(oncePerDayKey, '1')
+          return
+        }
+
+        setCarryoverModal({
+          open: true,
+          mode,
+          tasks,
+          selectedIds: tasks.map((t) => t.id),
+          loading: false,
+        })
+      } catch (e) {
+        console.error('Übernahme-Dialog Fehler:', e)
+      }
+    }
+
+    loadCarryoverTasks()
+    return () => { mounted = false }
+  }, [user?.id, authLoading])
+
+  function toggleCarryoverTask(taskId) {
+    setCarryoverModal((prev) => {
+      const selected = new Set(prev.selectedIds)
+      if (selected.has(taskId)) selected.delete(taskId)
+      else selected.add(taskId)
+      return { ...prev, selectedIds: Array.from(selected) }
+    })
+  }
+
+  function selectAllCarryoverTasks() {
+    setCarryoverModal((prev) => ({ ...prev, selectedIds: prev.tasks.map((t) => t.id) }))
+  }
+
+  function clearCarryoverSelection() {
+    setCarryoverModal((prev) => ({ ...prev, selectedIds: [] }))
+  }
+
+  async function handleCarryoverSubmit({ moveSelected, markAsPrompted }) {
+    if (!user?.id || !supabase) return
+    const todayKey = toLocalDateKey()
+    const oncePerDayKey = `studiio_task_carryover_prompted_${todayKey}`
+    const nowIso = new Date().toISOString()
+    const selectedSet = new Set(carryoverModal.selectedIds)
+    const selectedTasks = carryoverModal.tasks.filter((t) => selectedSet.has(t.id))
+
+    setCarryoverModal((prev) => ({ ...prev, loading: true }))
+    try {
+      if (moveSelected) {
+        // Ausgewählte Aufgaben auf heute verschieben (Datum heute, Uhrzeit beibehalten)
+        for (const task of selectedTasks) {
+          const current = new Date(task.scheduled_at)
+          const today = new Date()
+          today.setHours(current.getHours(), current.getMinutes(), 0, 0)
+          await supabase
+            .from('learning_plan_tasks')
+            .update({ scheduled_at: today.toISOString() })
+            .eq('id', task.id)
+            .eq('user_id', user.id)
+        }
+      }
+
+      if (markAsPrompted) {
+        // Für alle angezeigten Aufgaben merken, dass bereits gefragt wurde (nur einmal pro Aufgabe).
+        const allShownIds = carryoverModal.tasks.map((t) => t.id)
+        if (allShownIds.length) {
+          await supabase
+            .from('learning_plan_tasks')
+            .update({ carryover_prompted_at: nowIso })
+            .in('id', allShownIds)
+            .eq('user_id', user.id)
+        }
+      }
+    } catch (e) {
+      console.error('Übernahme-Dialog: Speichern fehlgeschlagen', e)
+    } finally {
+      if (typeof window !== 'undefined') window.localStorage.setItem(oncePerDayKey, '1')
+      setCarryoverModal({ open: false, mode: 'yesterday', tasks: [], selectedIds: [], loading: false })
+    }
+  }
+
   const isOverviewRoot = activeView === 'overview' && !selectedSubject
   const navActiveView = selectedSubject ? 'subjects' : activeView
+  const canRemindTomorrow = carryoverModal.mode === 'all_open'
+  const carryoverTypeCounts = carryoverModal.tasks.reduce((acc, task) => {
+    const type = task?.type || 'manual'
+    acc[type] = (acc[type] || 0) + 1
+    return acc
+  }, {})
   const headerTitle = activeView === 'settings'
     ? 'Einstellungen'
     : activeView === 'statistics'
@@ -142,6 +309,86 @@ function App() {
     : isOverviewRoot
       ? ''
       : 'Deine Lernübersicht auf einen Blick.'
+
+  function renderMainContent() {
+    if (selectedSubject) {
+      return (
+        <SubjectDetail
+          user={user}
+          subject={selectedSubject}
+          onBack={() => setSelectedSubject(null)}
+          openToPractice={openToPractice}
+          onOpenToPracticeHandled={() => setOpenToPractice(false)}
+          openToTutorMaterialId={openToTutorMaterialId}
+          onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
+        />
+      )
+    }
+
+    if (activeView === 'overview') {
+      return (
+        <DashboardSubjects
+          user={user}
+          onTodayPlannedChange={setTodayPlannedTasks}
+          onOpenSubject={(subject) => setSelectedSubject(subject)}
+          onStartPractice={(subject) => {
+            setSelectedSubject(subject)
+            setOpenToPractice(true)
+          }}
+          onOpenTutor={(subject, materialId) => {
+            setSelectedSubject(subject)
+            setOpenToTutorMaterialId(materialId)
+          }}
+          showTopSection
+          showLearningPlanSection
+          showSubjectsSection={false}
+        />
+      )
+    }
+
+    if (activeView === 'subjects') {
+      return (
+        <DashboardSubjects
+          user={user}
+          onTodayPlannedChange={setTodayPlannedTasks}
+          onOpenSubject={(subject) => setSelectedSubject(subject)}
+          onStartPractice={(subject) => {
+            setSelectedSubject(subject)
+            setOpenToPractice(true)
+          }}
+          onOpenTutor={(subject, materialId) => {
+            setSelectedSubject(subject)
+            setOpenToTutorMaterialId(materialId)
+          }}
+          showTopSection={false}
+          showLearningPlanSection={false}
+          showSubjectsSection
+        />
+      )
+    }
+
+    if (activeView === 'statistics') {
+      return (
+        <StatisticsPage
+          user={user}
+          onGoToLearningPlan={() => {
+            setActiveView('overview')
+            setSelectedSubject(null)
+          }}
+          onGoToSubjects={() => {
+            setActiveView('subjects')
+            setSelectedSubject(null)
+          }}
+        />
+      )
+    }
+
+    if (activeView === 'settings') {
+      return <SettingsClaudeKey user={user} />
+    }
+
+    return null
+  }
 
   if (!supabase) {
     return (
@@ -258,58 +505,105 @@ function App() {
         </header>
 
         <main className="mx-auto w-full max-w-[1320px] px-4 py-6 md:px-8 md:py-8">
-          {selectedSubject ? (
-            <SubjectDetail
-              user={user}
-              subject={selectedSubject}
-              onBack={() => setSelectedSubject(null)}
-              openToPractice={openToPractice}
-              onOpenToPracticeHandled={() => setOpenToPractice(false)}
-              openToTutorMaterialId={openToTutorMaterialId}
-              onOpenToTutorHandled={() => setOpenToTutorMaterialId(null)}
-            />
-          ) : activeView === 'overview' ? (
-            <DashboardSubjects
-              user={user}
-              onTodayPlannedChange={setTodayPlannedTasks}
-              onOpenSubject={(subject) => setSelectedSubject(subject)}
-              onStartPractice={(subject) => {
-                setSelectedSubject(subject)
-                setOpenToPractice(true)
-              }}
-              onOpenTutor={(subject, materialId) => {
-                setSelectedSubject(subject)
-                setOpenToTutorMaterialId(materialId)
-              }}
-              showTopSection
-              showLearningPlanSection
-              showSubjectsSection={false}
-            />
-          ) : null}
-          {activeView === 'subjects' && !selectedSubject && (
-            <DashboardSubjects
-              user={user}
-              onTodayPlannedChange={setTodayPlannedTasks}
-              onOpenSubject={(subject) => setSelectedSubject(subject)}
-              onStartPractice={(subject) => {
-                setSelectedSubject(subject)
-                setOpenToPractice(true)
-              }}
-              onOpenTutor={(subject, materialId) => {
-                setSelectedSubject(subject)
-                setOpenToTutorMaterialId(materialId)
-              }}
-              showTopSection={false}
-              showLearningPlanSection={false}
-              showSubjectsSection
-            />
-          )}
-          {activeView === 'statistics' && !selectedSubject && (
-            <StatisticsPage user={user} />
-          )}
-          {activeView === 'settings' && <SettingsClaudeKey user={user} />}
+          <Suspense fallback={<p className="text-sm text-studiio-muted">Ansicht wird geladen …</p>}>
+            {renderMainContent()}
+          </Suspense>
         </main>
       </div>
+      {carryoverModal.open && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 px-4">
+          <div className="w-full max-w-xl rounded-2xl border border-studiio-lavender/40 bg-white p-4 shadow-xl">
+            <h3 className="text-lg font-semibold text-studiio-ink">
+              {getGreetingByHour()}, {getDisplayName(user)}!
+            </h3>
+            <p className="mt-1 text-sm text-studiio-muted">
+              {carryoverModal.mode === 'yesterday'
+                ? 'Welche offenen Aufgaben von gestern möchtest du auf heute verschieben?'
+                : 'Du warst etwas länger nicht aktiv. Welche offenen Aufgaben möchtest du auf heute verschieben?'}
+            </p>
+            <p className="mt-1 text-xs text-studiio-muted">
+              {canRemindTomorrow
+                ? 'Du kannst auch auf „Morgen erinnern“ tippen, wenn du heute bewusst nichts verschieben möchtest.'
+                : 'Wenn du heute nichts verschieben möchtest, nutze „Heute nichts verschieben“. Dann fragen wir diese Aufgaben nicht erneut.'}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-studiio-muted">
+                {carryoverModal.selectedIds.length} von {carryoverModal.tasks.length} ausgewählt
+              </p>
+              <p className="text-xs text-studiio-muted">
+                {getTaskTypeLabel('tutor')}: {carryoverTypeCounts.tutor || 0} · {getTaskTypeLabel('vocab')}: {carryoverTypeCounts.vocab || 0} · {getTaskTypeLabel('exam')}: {carryoverTypeCounts.exam || 0} · {getTaskTypeLabel('manual')}: {carryoverTypeCounts.manual || 0}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={selectAllCarryoverTasks}
+                  className="rounded border border-studiio-lavender/70 bg-white px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-lavender/20"
+                >
+                  Alle auswählen
+                </button>
+                <button
+                  type="button"
+                  onClick={clearCarryoverSelection}
+                  className="rounded border border-studiio-lavender/70 bg-white px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-lavender/20"
+                >
+                  Keine auswählen
+                </button>
+              </div>
+            </div>
+            <ul className="mt-3 max-h-72 space-y-2 overflow-auto">
+              {carryoverModal.tasks.map((task) => (
+                <li key={task.id} className="rounded-lg border border-studiio-lavender/40 bg-studiio-sky/10 px-3 py-2">
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={carryoverModal.selectedIds.includes(task.id)}
+                      onChange={() => toggleCarryoverTask(task.id)}
+                      className="mt-1 h-4 w-4"
+                    />
+                    <span className="min-w-0">
+                      <span className={`mb-1 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${getTaskTypeBadgeClass(task.type)}`}>
+                        {getTaskTypeLabel(task.type)}
+                      </span>
+                      <span className="block text-sm font-medium text-studiio-ink">{task.title || 'Aufgabe'}</span>
+                      <span className="block text-xs text-studiio-muted">
+                        {new Date(task.scheduled_at).toLocaleDateString('de-DE')} · {new Date(task.scheduled_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => handleCarryoverSubmit({ moveSelected: false, markAsPrompted: true })}
+                disabled={carryoverModal.loading}
+                className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
+              >
+                Heute nichts verschieben
+              </button>
+              {canRemindTomorrow && (
+                <button
+                  type="button"
+                  onClick={() => handleCarryoverSubmit({ moveSelected: false, markAsPrompted: false })}
+                  disabled={carryoverModal.loading}
+                  className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
+                >
+                  Morgen erinnern
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => handleCarryoverSubmit({ moveSelected: true, markAsPrompted: true })}
+                disabled={carryoverModal.loading}
+                className="studiio-btn-primary"
+              >
+                {carryoverModal.loading ? 'Speichert …' : 'Auswahl übernehmen'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

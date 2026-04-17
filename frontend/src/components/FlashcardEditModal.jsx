@@ -50,6 +50,7 @@ export default function FlashcardEditModal({ user, card, onClose, onSuccess, onD
         body: JSON.stringify({
           apiKey,
           provider,
+          userId: user.id,
           question: question.trim(),
           correctAnswer: answer.trim(),
           existingOptions: existingOpts.length > 0 ? existingOpts : undefined,

@@ -11,6 +11,7 @@ export const FALLBACK_SUPABASE_ANON_KEY = ''
 
 export const MAX_STORAGE_PER_USER_MB = 20
 export const DEFAULT_EXAM_TIMER_MINUTES = 90
+export const DEFAULT_MONTHLY_AI_BUDGET_USD = 10
 
 /**
  * Basis-URL des Backend-Servers (Claude-Proxy & API). In Production VITE_API_BASE setzen

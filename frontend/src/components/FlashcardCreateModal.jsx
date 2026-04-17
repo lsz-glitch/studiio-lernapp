@@ -82,6 +82,7 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
         body: JSON.stringify({
           apiKey,
           provider,
+          userId: user.id,
           subjectName: subject.name,
           materialFilename: material.filename,
           pdfText: pdfText.slice(0, 80000),

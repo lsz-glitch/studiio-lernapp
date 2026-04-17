@@ -151,6 +151,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
         body: JSON.stringify({
           apiKey,
           provider,
+          userId: user.id,
           question: card.question,
           correctAnswer: card.answer,
           userAnswer: openAnswer.trim(),

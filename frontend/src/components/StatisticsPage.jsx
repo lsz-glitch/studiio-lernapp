@@ -69,6 +69,7 @@ function LineChartCard({ title, subtitle, rows, valueFormatter, stroke = '#66bfa
     points.length > 0
       ? `${linePath} L ${points[points.length - 1].x} ${padTop + chartH} L ${points[0].x} ${padTop + chartH} Z`
       : ''
+  const isEmpty = rows.every((row) => Number(row.value || 0) === 0)
 
   return (
     <div className="rounded-xl border border-studiio-lavender/40 bg-white px-4 py-3">
@@ -77,44 +78,57 @@ function LineChartCard({ title, subtitle, rows, valueFormatter, stroke = '#66bfa
         <p className="text-xs text-studiio-muted">{subtitle}</p>
       </div>
       <div className="rounded-lg border border-studiio-lavender/30 bg-[#fcfdff] p-2">
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-44">
-          <line x1={padX} y1={padTop + chartH} x2={width - padX} y2={padTop + chartH} stroke="#d8dbe8" strokeWidth="1.5" />
-          <line x1={padX} y1={padTop} x2={padX} y2={padTop + chartH} stroke="#e6e8f0" strokeWidth="1" />
-          {areaPath && <path d={areaPath} fill={fill} />}
-          {linePath && <path d={linePath} fill="none" stroke={stroke} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />}
-          {points.map((p, idx) => {
-            const dense = rows.length > 14
-            const showTick = !dense || idx % 3 === 0 || idx === rows.length - 1
-            return (
-            <g key={p.row.key}>
-              <circle cx={p.x} cy={p.y} r="4.5" fill={stroke} />
-              {showTick && (
-                <>
-                  <text x={p.x} y={padTop + chartH + 16} textAnchor="middle" fontSize="10" fill="#6f7282">
-                    {p.row.label}
-                  </text>
-                  <text x={p.x} y={padTop + chartH + 28} textAnchor="middle" fontSize="10" fill="#9aa0b5">
-                    {p.row.shortDate}
-                  </text>
-                </>
-              )}
-            </g>
-            )
-          })}
-        </svg>
+        {isEmpty ? (
+          <div className="flex h-44 flex-col items-center justify-center rounded-md border border-dashed border-studiio-lavender/50 bg-white/70 px-4 text-center">
+            <p className="text-sm font-medium text-studiio-ink">Hier kommt deine Kurve, sobald du loslegst.</p>
+            <p className="mt-1 text-xs text-studiio-muted">Starte heute mit 1 kurzen Lerneinheit.</p>
+          </div>
+        ) : (
+          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-44">
+            <line x1={padX} y1={padTop + chartH} x2={width - padX} y2={padTop + chartH} stroke="#d8dbe8" strokeWidth="1.5" />
+            <line x1={padX} y1={padTop} x2={padX} y2={padTop + chartH} stroke="#e6e8f0" strokeWidth="1" />
+            {areaPath && <path d={areaPath} fill={fill} />}
+            {linePath && <path d={linePath} fill="none" stroke={stroke} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />}
+            {points.map((p, idx) => {
+              const dense = rows.length > 14
+              const showTick = !dense || idx % 3 === 0 || idx === rows.length - 1
+              return (
+                <g key={p.row.key}>
+                  <circle cx={p.x} cy={p.y} r="4.5" fill={stroke} />
+                  {showTick && (
+                    <>
+                      <text x={p.x} y={padTop + chartH + 16} textAnchor="middle" fontSize="10" fill="#6f7282">
+                        {p.row.label}
+                      </text>
+                      <text x={p.x} y={padTop + chartH + 28} textAnchor="middle" fontSize="10" fill="#9aa0b5">
+                        {p.row.shortDate}
+                      </text>
+                    </>
+                  )}
+                </g>
+              )
+            })}
+          </svg>
+        )}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-studiio-muted">
-        {rows.map((row) => (
-          <span key={row.key} className="rounded bg-studiio-lavender/20 px-2 py-1">
-            {row.label}: <span className="font-medium text-studiio-ink">{valueFormatter(row.value)}</span>
+        {isEmpty ? (
+          <span className="rounded bg-studiio-lavender/20 px-2 py-1">
+            Noch keine Einträge im gewählten Zeitraum.
           </span>
-        ))}
+        ) : (
+          rows.map((row) => (
+            <span key={row.key} className="rounded bg-studiio-lavender/20 px-2 py-1">
+              {row.label}: <span className="font-medium text-studiio-ink">{valueFormatter(row.value)}</span>
+            </span>
+          ))
+        )}
       </div>
     </div>
   )
 }
 
-export default function StatisticsPage({ user }) {
+export default function StatisticsPage({ user, onGoToLearningPlan, onGoToSubjects }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [subjects, setSubjects] = useState([])
@@ -313,6 +327,13 @@ export default function StatisticsPage({ user }) {
 
   if (loading) return <p className="text-sm text-studiio-muted">Statistiken werden geladen …</p>
 
+  const noKpiData =
+    stats.todayLearnedSeconds === 0 &&
+    stats.materialsCount === 0 &&
+    stats.flashcardsCount === 0 &&
+    stats.completedTutorRuns === 0 &&
+    stats.completedTasksToday === 0
+
   return (
     <section className="space-y-4">
       {error && (
@@ -370,6 +391,30 @@ export default function StatisticsPage({ user }) {
         <StatCard label="Tutor abgeschlossen" value={String(stats.completedTutorRuns)} helper="Fertig durchgearbeitete Läufe" tone="bg-[#effaf8]" />
         <StatCard label="Heute erledigte Aufgaben" value={String(stats.completedTasksToday)} helper="Im Lernplan abgehakt" tone="bg-[#fff8ef]" />
       </div>
+      {noKpiData && (
+        <div className="rounded-xl border border-studiio-lavender/40 bg-white px-4 py-3">
+          <p className="text-sm font-semibold text-studiio-ink">Deine Statistik startet jetzt 🚀</p>
+          <p className="mt-1 text-sm text-studiio-muted">
+            Starte heute mit 1 kurzen Lerneinheit, dann siehst du hier direkt deinen Fortschritt.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onGoToLearningPlan}
+              className="rounded-lg border border-studiio-lavender/70 bg-white px-3 py-1.5 text-xs font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+            >
+              Zum Lernplan
+            </button>
+            <button
+              type="button"
+              onClick={onGoToSubjects}
+              className="rounded-lg border border-studiio-lavender/70 bg-white px-3 py-1.5 text-xs font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+            >
+              Zu den Fächern
+            </button>
+          </div>
+        </div>
+      )}
       <div className="grid gap-4 xl:grid-cols-2">
         <LineChartCard
           title="Lernzeit pro Tag"

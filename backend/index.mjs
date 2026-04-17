@@ -79,6 +79,17 @@ const materialPageContextCache = new Map()
 const MATERIAL_CONTEXT_VERSION = 1
 const MAX_PAGE_CHARS = 7000
 const shareRateLimit = new Map()
+const AI_USAGE_TABLE = 'ai_usage_logs'
+
+const AI_PRICING_PER_1K_TOKENS_USD = {
+  anthropic: { input: 0.003, output: 0.015 },
+  openai: { input: 0.0015, output: 0.002 },
+  groq: { input: 0.0007, output: 0.0008 },
+  openrouter: { input: 0.0015, output: 0.002 },
+  mistral: { input: 0.0006, output: 0.0018 },
+  xai: { input: 0.005, output: 0.015 },
+  fallback: { input: 0.002, output: 0.004 },
+}
 
 function normalizeProvider(raw) {
   const p = String(raw || '').trim().toLowerCase()
@@ -101,15 +112,69 @@ function normalizeAnthropicMessages(messages = []) {
 }
 
 function asAnthropicLikeFromOpenAi(data = {}) {
+  const usage = data?.usage || {}
   return {
     id: data.id,
     model: data.model,
+    usage: {
+      input_tokens: Number(usage.prompt_tokens || 0),
+      output_tokens: Number(usage.completion_tokens || 0),
+      total_tokens: Number(usage.total_tokens || 0),
+    },
     content: [
       {
         type: 'text',
         text: data?.choices?.[0]?.message?.content || '',
       },
     ],
+  }
+}
+
+function extractUsageTokens(data = {}) {
+  const usage = data?.usage || {}
+  const inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0
+  const outputTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0
+  const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens) || 0
+  return { inputTokens, outputTokens, totalTokens }
+}
+
+function estimateUsageCostUsd({ provider, inputTokens, outputTokens }) {
+  const p = AI_PRICING_PER_1K_TOKENS_USD[provider] || AI_PRICING_PER_1K_TOKENS_USD.fallback
+  const inCost = (Number(inputTokens || 0) / 1000) * p.input
+  const outCost = (Number(outputTokens || 0) / 1000) * p.output
+  return Number((inCost + outCost).toFixed(6))
+}
+
+async function recordAiUsageLog({
+  userId,
+  provider,
+  model,
+  endpoint,
+  responseData,
+}) {
+  if (!userId || !supabaseServerClient) return
+  try {
+    const normalizedProvider = normalizeProvider(provider)
+    const { inputTokens, outputTokens, totalTokens } = extractUsageTokens(responseData)
+    const estimatedCostUsd = estimateUsageCostUsd({
+      provider: normalizedProvider,
+      inputTokens,
+      outputTokens,
+    })
+
+    await supabaseServerClient.from(AI_USAGE_TABLE).insert({
+      user_id: userId,
+      provider: normalizedProvider,
+      model: String(model || responseData?.model || ''),
+      endpoint: String(endpoint || ''),
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: totalTokens,
+      estimated_cost_usd: estimatedCostUsd,
+      created_at: new Date().toISOString(),
+    })
+  } catch (_) {
+    // Tabelle evtl. noch nicht angelegt -> stiller Fallback
   }
 }
 
@@ -177,7 +242,7 @@ async function callAiProvider({ provider, apiKey, payload }) {
   return { status: resp.status, data }
 }
 
-async function callAiText({ provider, apiKey, model, maxTokens, system, userContent }) {
+async function callAiText({ provider, apiKey, model, maxTokens, system, userContent, userId, endpoint }) {
   const payload = {
     model,
     max_tokens: maxTokens,
@@ -185,6 +250,15 @@ async function callAiText({ provider, apiKey, model, maxTokens, system, userCont
     messages: [{ role: 'user', content: userContent }],
   }
   const out = await callAiProvider({ provider, apiKey, payload })
+  if (out.status >= 200 && out.status < 300) {
+    await recordAiUsageLog({
+      userId,
+      provider,
+      model: out?.data?.model || model,
+      endpoint,
+      responseData: out?.data,
+    })
+  }
   return {
     ...out,
     text: out?.data?.content?.[0]?.text || '',
@@ -339,7 +413,7 @@ async function upsertPageContextRow(row) {
 
 app.post('/api/claude', async (req, res) => {
   try {
-    const { apiKey, provider = 'anthropic', payload } = req.body || {}
+    const { apiKey, provider = 'anthropic', payload, userId } = req.body || {}
 
     if (!apiKey || !payload) {
       return res.status(400).json({ error: 'apiKey und payload sind erforderlich.' })
@@ -349,6 +423,13 @@ app.post('/api/claude', async (req, res) => {
       console.error('[Studiio Backend] AI Proxy Fehler:', provider, out.status, out.data)
       return res.status(out.status).json(out.data)
     }
+    await recordAiUsageLog({
+      userId,
+      provider,
+      model: out?.data?.model || payload?.model,
+      endpoint: '/api/claude',
+      responseData: out?.data,
+    })
     return res.status(200).json(out.data)
   } catch (err) {
     const code = err.cause?.code || err.code
@@ -527,7 +608,7 @@ app.post('/api/build-material-context', async (req, res) => {
         .status(500)
         .json({ error: 'Supabase Server-Client ist nicht konfiguriert (fehlende ENV Variablen).' })
     }
-    const { materialId, storagePath, provider = 'anthropic', apiKey } = req.body || {}
+    const { materialId, storagePath, provider = 'anthropic', apiKey, userId } = req.body || {}
     if (!materialId || !storagePath) {
       return res.status(400).json({ error: 'materialId und storagePath sind erforderlich.' })
     }
@@ -581,6 +662,8 @@ app.post('/api/build-material-context', async (req, res) => {
           maxTokens: 650,
           system,
           userContent,
+          userId,
+          endpoint: '/api/build-material-context',
         })
         if (out.status >= 200 && out.status < 300 && out.text?.trim()) {
           combinedSummary = out.text.trim()
@@ -628,6 +711,7 @@ app.post('/api/generate-flashcards', async (req, res) => {
       focusTheme,
       forceFormat,
       verbatimMode: verbatimModeInput,
+      userId,
     } = req.body || {}
     if (!apiKey || !pdfText) {
       return res.status(400).json({ error: 'apiKey und pdfText sind erforderlich.' })
@@ -708,6 +792,8 @@ ${String(pdfText).slice(0, 80000)}
       maxTokens: 8000,
       system,
       userContent,
+      userId,
+      endpoint: '/api/generate-flashcards',
     })
     if (out.status < 200 || out.status >= 300) {
       console.error('[Studiio Backend] generate-flashcards AI:', out.status, out.data)
@@ -982,7 +1068,7 @@ ${String(pdfText).slice(0, 80000)}
 
 app.post('/api/evaluate-answer', async (req, res) => {
   try {
-    const { apiKey, provider = 'anthropic', question, correctAnswer, userAnswer } = req.body || {}
+    const { apiKey, provider = 'anthropic', question, correctAnswer, userAnswer, userId } = req.body || {}
     if (!apiKey || !question || correctAnswer == null || !userAnswer) {
       return res.status(400).json({ error: 'apiKey, question, correctAnswer und userAnswer sind erforderlich.' })
     }
@@ -1002,6 +1088,8 @@ app.post('/api/evaluate-answer', async (req, res) => {
       maxTokens: 200,
       system,
       userContent,
+      userId,
+      endpoint: '/api/evaluate-answer',
     })
     if (out.status < 200 || out.status >= 300) {
       return res.status(out.status).json(out.data)
@@ -1039,7 +1127,7 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
   let correctAnswer = ''
   try {
     const body = req.body || {}
-    const { apiKey, provider = 'anthropic', question, existingOptions } = body
+    const { apiKey, provider = 'anthropic', question, existingOptions, userId } = body
     correctAnswer = body.correctAnswer != null ? String(body.correctAnswer) : ''
     if (!apiKey || !question || body.correctAnswer == null) {
       return res.status(400).json({ error: 'apiKey, question und correctAnswer sind erforderlich.', options: fallbackMcqOptions(correctAnswer) })
@@ -1058,6 +1146,8 @@ app.post('/api/suggest-mcq-options', async (req, res) => {
       maxTokens: 300,
       system,
       userContent,
+      userId,
+      endpoint: '/api/suggest-mcq-options',
     })
     if (out.status < 200 || out.status >= 300) {
       const errMsg = out?.data?.error?.message || out?.data?.error || out?.data?.message || 'Unbekannter Fehler'
