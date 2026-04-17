@@ -27,6 +27,13 @@ function getGreetingByHour() {
   return new Date().getHours() < 12 ? 'Guten Morgen' : 'Guten Tag'
 }
 
+function getMotivationByHour() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Schönen Start in den Tag - du packst das.'
+  if (hour >= 18) return 'Stark, dass du heute noch lernst.'
+  return 'Ich wünsche dir einen produktiven, entspannten Lerntag.'
+}
+
 function toLocalDateKey(date = new Date()) {
   const d = new Date(date)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -37,6 +44,16 @@ function getDateRangeForKey(dateKey) {
   const end = new Date(start)
   end.setDate(end.getDate() + 1)
   return { startIso: start.toISOString(), endIso: end.toISOString() }
+}
+
+function dayDiffFromToday(dayKey) {
+  if (!dayKey) return null
+  const target = new Date(`${dayKey}T00:00:00`)
+  if (Number.isNaN(target.getTime())) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const diffMs = today.getTime() - target.getTime()
+  return Math.round(diffMs / (24 * 60 * 60 * 1000))
 }
 
 function getTaskTypeLabel(type) {
@@ -178,7 +195,9 @@ function App() {
           .eq('user_id', user.id)
           .maybeSingle()
         const lastActivity = streakData?.last_activity_date ? String(streakData.last_activity_date).slice(0, 10) : null
-        const mode = lastActivity === yesterday ? 'yesterday' : 'all_open'
+        const daysSinceLastActivity = dayDiffFromToday(lastActivity)
+        // "yesterday"-Modus auch dann, wenn gestern ODER heute bereits Aktivität vorlag.
+        const mode = daysSinceLastActivity != null && daysSinceLastActivity <= 1 ? 'yesterday' : 'all_open'
 
         let query = supabase
           .from('learning_plan_tasks')
@@ -512,19 +531,22 @@ function App() {
       </div>
       {carryoverModal.open && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 px-4">
-          <div className="w-full max-w-xl rounded-2xl border border-studiio-lavender/40 bg-white p-4 shadow-xl">
+          <div className="w-full max-w-xl rounded-2xl border border-studiio-lavender/40 bg-gradient-to-br from-white via-[#f8fbff] to-[#f3fff8] p-4 shadow-xl">
             <h3 className="text-lg font-semibold text-studiio-ink">
-              {getGreetingByHour()}, {getDisplayName(user)}!
+              {getGreetingByHour()}, {getDisplayName(user)}! 🌷
             </h3>
             <p className="mt-1 text-sm text-studiio-muted">
               {carryoverModal.mode === 'yesterday'
-                ? 'Welche offenen Aufgaben von gestern möchtest du auf heute verschieben?'
-                : 'Du warst etwas länger nicht aktiv. Welche offenen Aufgaben möchtest du auf heute verschieben?'}
+                ? 'Schön, dass du heute lernst. Welche offenen Aufgaben von gestern möchtest du heute mitnehmen?'
+                : 'Willkommen zurück! Welche offenen Aufgaben aus den letzten Tagen möchtest du heute übernehmen?'}
             </p>
             <p className="mt-1 text-xs text-studiio-muted">
               {canRemindTomorrow
                 ? 'Du kannst auch auf „Morgen erinnern“ tippen, wenn du heute bewusst nichts verschieben möchtest.'
                 : 'Wenn du heute nichts verschieben möchtest, nutze „Heute nichts verschieben“. Dann fragen wir diese Aufgaben nicht erneut.'}
+            </p>
+            <p className="mt-1 text-xs font-medium text-studiio-accent">
+              {getMotivationByHour()}
             </p>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs text-studiio-muted">
