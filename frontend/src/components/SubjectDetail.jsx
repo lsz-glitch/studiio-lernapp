@@ -4,7 +4,29 @@ import SubjectMaterials from './SubjectMaterials'
 import LectureTutor from './LectureTutor'
 import FlashcardCreateModal from './FlashcardCreateModal'
 import FlashcardPracticePage from './FlashcardPracticePage'
+import SubjectPlanMode from './SubjectPlanMode'
 import { getLearningTime, formatLearningTime } from '../utils/learningTime'
+
+function isHarmlessAbortError(err) {
+  const message = String(err?.message || '').toLowerCase()
+  const code = String(err?.code || '').toLowerCase()
+  return (
+    message.includes('aborterror') ||
+    message.includes('lock was stolen by another request') ||
+    code === 'aborterror'
+  )
+}
+
+function isMissingSubjectNotesTable(err) {
+  const message = String(err?.message || '').toLowerCase()
+  const details = String(err?.details || '').toLowerCase()
+  const code = String(err?.code || '').toLowerCase()
+  return (
+    code === '42p01' ||
+    message.includes('subject_notes') && message.includes('does not exist') ||
+    details.includes('subject_notes') && details.includes('does not exist')
+  )
+}
 
 class SubjectDetailErrorBoundary extends React.Component {
   constructor(props) {
@@ -69,6 +91,20 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
   const [noteSaving, setNoteSaving] = useState(false)
   const [noteStatus, setNoteStatus] = useState('')
   const [noteError, setNoteError] = useState('')
+  const [notesAvailable, setNotesAvailable] = useState(true)
+  const [localExamDate, setLocalExamDate] = useState(subject?.exam_date || '')
+  const [examDateDraft, setExamDateDraft] = useState('')
+  const [showExamDateEditor, setShowExamDateEditor] = useState(false)
+  const [savingExamDate, setSavingExamDate] = useState(false)
+  const [examDateError, setExamDateError] = useState('')
+
+  useEffect(() => {
+    setLocalExamDate(subject?.exam_date || '')
+    setExamDateDraft(subject?.exam_date || '')
+    setShowExamDateEditor(false)
+    setExamDateError('')
+  }, [subject?.id, subject?.exam_date])
+  const [showFullSubjectPlan, setShowFullSubjectPlan] = useState(false)
 
   useEffect(() => {
     if (!user?.id || !subject?.id) return
@@ -140,6 +176,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
     setNoteHydrated(false)
     setNoteError('')
     setNoteStatus('')
+    setNotesAvailable(true)
     supabase
       .from('subject_notes')
       .select('content')
@@ -149,8 +186,23 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       .then(({ data, error }) => {
         if (!mounted) return
         if (error) {
+          if (isHarmlessAbortError(error)) {
+            setNoteLoading(false)
+            setNoteHydrated(true)
+            return
+          }
+          if (isMissingSubjectNotesTable(error)) {
+            setNotesAvailable(false)
+            setNoteError('')
+            setNoteStatus('Notizen sind für dieses Konto noch nicht aktiviert.')
+            setNoteText('')
+            setLastSavedNote('')
+            setNoteLoading(false)
+            setNoteHydrated(true)
+            return
+          }
           console.error('Fehler beim Laden der Notiz:', error)
-          setNoteError('Notiz konnte nicht geladen werden. Bitte SQL für subject_notes ausführen.')
+          setNoteError('Notiz konnte nicht geladen werden. Bitte später erneut versuchen.')
           setNoteText('')
           setLastSavedNote('')
         } else {
@@ -166,6 +218,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
 
   async function persistNote(nextText) {
     if (!user?.id || !subject?.id) return
+    if (!notesAvailable) return
     if (noteSaving) return
     if (nextText === lastSavedNote) return
     setNoteSaving(true)
@@ -184,8 +237,15 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       )
     setNoteSaving(false)
     if (error) {
+      if (isMissingSubjectNotesTable(error)) {
+        setNotesAvailable(false)
+        setNoteError('')
+        setNoteStatus('Notizen sind für dieses Konto noch nicht aktiviert.')
+        return
+      }
+      if (isHarmlessAbortError(error)) return
       console.error('Fehler beim Speichern der Notiz:', error)
-      setNoteError('Notiz konnte nicht gespeichert werden. Bitte SQL für subject_notes ausführen.')
+      setNoteError('Notiz konnte nicht gespeichert werden. Bitte später erneut versuchen.')
       return
     }
     setLastSavedNote(nextText)
@@ -230,6 +290,57 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
     return () => { mounted = false }
   }, [openToTutorMaterialId, subject?.id, user?.id])
 
+  async function resolveMaterialById(materialId) {
+    if (!materialId || !subject?.id || !user?.id) return null
+    const { data, error } = await supabase
+      .from('materials')
+      .select('id, filename, category, storage_path')
+      .eq('id', materialId)
+      .eq('subject_id', subject.id)
+      .eq('user_id', user.id)
+      .maybeSingle()
+    if (error) return null
+    return data || null
+  }
+
+  async function handlePlannedTaskClick(task) {
+    if (!task) return
+    if (task.type === 'tutor' && task.material_id) {
+      const material = await resolveMaterialById(task.material_id)
+      if (material) setActiveLecture(material)
+      return
+    }
+    if (task.type === 'vocab') {
+      setPracticeMaterialFilter(task.material_id || null)
+      setShowFlashcardPractice(true)
+      return
+    }
+    const title = String(task.title || '').toLocaleLowerCase('de-DE')
+    if (task.material_id && title.includes('vokabeln erstellen')) {
+      const material = await resolveMaterialById(task.material_id)
+      if (material) setFlashcardMaterial(material)
+    }
+  }
+
+  async function saveExamDate() {
+    if (!user?.id || !subject?.id || !examDateDraft) return
+    setSavingExamDate(true)
+    setExamDateError('')
+    const { error } = await supabase
+      .from('subjects')
+      .update({ exam_date: examDateDraft })
+      .eq('id', subject.id)
+      .eq('user_id', user.id)
+    setSavingExamDate(false)
+    if (error) {
+      console.error('Klausurtermin speichern fehlgeschlagen:', error)
+      setExamDateError('Klausurtermin konnte nicht gespeichert werden.')
+      return
+    }
+    setLocalExamDate(examDateDraft)
+    setShowExamDateEditor(false)
+  }
+
   if (activeLecture) {
     return (
       <LectureTutor
@@ -263,35 +374,87 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         Zurück zur Übersicht
       </button>
 
-      <section className="rounded-2xl border border-studiio-lavender/60 bg-white/90 px-4 py-3 shadow-sm">
-        <h2 className="text-3xl font-semibold tracking-tight text-studiio-ink">{subject.name}</h2>
-        <p className="mt-0.5 text-sm text-studiio-muted">
-          {subject.group_label || 'Ohne Semester/Kategorie'}
-        </p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-xl border border-studiio-lavender/40 bg-[#eef5ff] px-3 py-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Countdown</p>
-            <p className="text-sm font-semibold text-studiio-ink">{formatCountdown(subject.exam_date)}</p>
-          </div>
-          <div className="rounded-xl border border-studiio-lavender/40 bg-[#fff3e7] px-3 py-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Klausur</p>
-            <p className="text-sm font-semibold text-studiio-ink">
-              {subject.exam_date ? new Date(subject.exam_date).toLocaleDateString('de-DE') : '—'}
-            </p>
-          </div>
-          <div className="rounded-xl border border-studiio-lavender/40 bg-[#ebfaf5] px-3 py-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Gelernt</p>
-            <p className="text-sm font-semibold text-studiio-ink">{formatLearningTime(learningTimeSeconds)}</p>
-          </div>
-          <div className="rounded-xl border border-studiio-lavender/40 bg-[#f2eefb] px-3 py-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Fortschritt</p>
-            <p className="text-sm font-semibold text-studiio-ink">{progressSummaryPct != null ? `${progressSummaryPct}%` : '—'}</p>
-          </div>
-        </div>
-      </section>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_430px]">
         <div className="space-y-4">
+          <section className="rounded-2xl border border-studiio-lavender/60 bg-white/90 px-4 py-3 shadow-sm">
+            <h2 className="text-3xl font-semibold tracking-tight text-studiio-ink">{subject.name}</h2>
+            <p className="mt-0.5 text-sm text-studiio-muted">
+              {subject.group_label || 'Ohne Semester/Kategorie'}
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-studiio-lavender/40 bg-[#eef5ff] px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Countdown</p>
+                {!localExamDate ? (
+                  <>
+                    {!showExamDateEditor ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExamDateDraft('')
+                          setShowExamDateEditor(true)
+                          setExamDateError('')
+                        }}
+                        className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-studiio-accent/40 bg-white px-2.5 py-2 text-xs font-semibold text-studiio-accent hover:bg-studiio-accent/10"
+                      >
+                        📅 Klausurtermin eintragen
+                      </button>
+                    ) : (
+                      <div className="mt-2 space-y-2">
+                        <input
+                          type="date"
+                          value={examDateDraft}
+                          onChange={(e) => setExamDateDraft(e.target.value)}
+                          className="studiio-input w-full rounded-md bg-white"
+                        />
+                        {examDateError && (
+                          <p className="text-xs text-red-600">{examDateError}</p>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowExamDateEditor(false)
+                              setExamDateError('')
+                            }}
+                            className="flex-1 rounded-md border border-studiio-lavender/70 px-2 py-1.5 text-xs font-medium text-studiio-ink hover:bg-studiio-sky/20"
+                            title="Abbrechen"
+                          >
+                            ✕
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!examDateDraft || savingExamDate}
+                            onClick={saveExamDate}
+                            className="flex-1 rounded-md bg-studiio-accent px-2 py-1.5 text-xs font-medium text-white hover:bg-studiio-accentHover disabled:opacity-60"
+                            title="Speichern"
+                          >
+                            {savingExamDate ? '…' : '✓'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm font-semibold text-studiio-ink">{formatCountdown(localExamDate)}</p>
+                )}
+              </div>
+              <div className="rounded-xl border border-studiio-lavender/40 bg-[#fff3e7] px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Klausur</p>
+                <p className="text-sm font-semibold text-studiio-ink">
+                  {localExamDate ? new Date(localExamDate).toLocaleDateString('de-DE') : '—'}
+                </p>
+              </div>
+              <div className="rounded-xl border border-studiio-lavender/40 bg-[#ebfaf5] px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Gelernt</p>
+                <p className="text-sm font-semibold text-studiio-ink">{formatLearningTime(learningTimeSeconds)}</p>
+              </div>
+              <div className="rounded-xl border border-studiio-lavender/40 bg-[#f2eefb] px-3 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-studiio-muted">Fortschritt</p>
+                <p className="text-sm font-semibold text-studiio-ink">{progressSummaryPct != null ? `${progressSummaryPct}%` : '—'}</p>
+              </div>
+            </div>
+          </section>
+
           <SubjectMaterials
             user={user}
             subject={subject}
@@ -303,24 +466,51 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
               setShowFlashcardPractice(true)
             }}
           />
+
+          <section className="rounded-2xl border border-studiio-lavender/50 bg-white/90 px-4 py-4 space-y-3">
+            <h3 className="text-base font-semibold text-studiio-ink">Notizen</h3>
+            {noteError && (
+              <p className="text-xs text-red-600">{noteError}</p>
+            )}
+            {noteLoading ? (
+              <p className="text-sm text-studiio-muted">Notiz wird geladen …</p>
+            ) : !notesAvailable ? (
+              <p className="text-sm text-studiio-muted">
+                Notizen sind aktuell noch nicht verfügbar.
+              </p>
+            ) : (
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="Kurze Stichpunkte, offene Fragen, Merksätze …"
+                rows={12}
+                className="w-full rounded-xl border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink placeholder:text-studiio-muted/70 focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
+              />
+            )}
+          </section>
         </div>
 
-        <aside className="h-fit rounded-2xl border border-studiio-lavender/50 bg-white/90 px-4 py-4 space-y-3 xl:sticky xl:top-4">
-          <h3 className="text-base font-semibold text-studiio-ink">Notizen</h3>
-          {noteError && (
-            <p className="text-xs text-red-600">{noteError}</p>
-          )}
-          {noteLoading ? (
-            <p className="text-sm text-studiio-muted">Notiz wird geladen …</p>
-          ) : (
-            <textarea
-              value={noteText}
-              onChange={(e) => setNoteText(e.target.value)}
-              placeholder="Kurze Stichpunkte, offene Fragen, Merksätze …"
-              rows={12}
-              className="w-full rounded-xl border border-studiio-lavender/60 px-3 py-2 text-sm text-studiio-ink placeholder:text-studiio-muted/70 focus:border-studiio-accent focus:outline-none focus:ring-1 focus:ring-studiio-accent"
+        <aside className="h-fit xl:sticky xl:top-4">
+          <section className="rounded-2xl border border-studiio-lavender/60 bg-white/90 p-3 shadow-sm">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-studiio-ink">Tagesplanung</h3>
+              <button
+                type="button"
+                onClick={() => setShowFullSubjectPlan(true)}
+                className="rounded border border-studiio-lavender/70 px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-sky/20"
+              >
+                Fachplan öffnen
+              </button>
+            </div>
+            <SubjectPlanMode
+              user={user}
+              subject={subject}
+              showHeader={false}
+              showCatalog={false}
+              interactive={false}
+              onTaskClick={handlePlannedTaskClick}
             />
-          )}
+          </section>
         </aside>
       </div>
 
@@ -335,6 +525,31 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
             setFlashcardMaterial(null)
           }}
         />
+      )}
+
+      {showFullSubjectPlan && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/35 p-4">
+          <div className="max-h-[92vh] w-full max-w-6xl overflow-auto rounded-2xl border border-studiio-lavender/50 bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-base font-semibold text-studiio-ink">Fachplan</h3>
+              <button
+                type="button"
+                onClick={() => setShowFullSubjectPlan(false)}
+                className="rounded border border-studiio-lavender/70 px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-sky/20"
+              >
+                Schließen
+              </button>
+            </div>
+            <SubjectPlanMode
+              user={user}
+              subject={subject}
+              showHeader={false}
+              showCatalog
+              interactive
+              allowSubjectSelection
+            />
+          </div>
+        </div>
       )}
     </div>
   )

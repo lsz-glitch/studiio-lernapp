@@ -27,6 +27,19 @@ function formatCountdown(examDate) {
   return `Klausur war vor ${pastDays} Tag${pastDays === 1 ? '' : 'en'}`
 }
 
+/** Für die Fach-Karte: Tage bis zur Klausur (gleiche Logik wie formatCountdown). */
+function getExamCountdownMeta(examDate) {
+  if (!examDate) return null
+  const today = new Date()
+  const target = new Date(examDate)
+  const oneDayMs = 1000 * 60 * 60 * 24
+  const diffDays = Math.round((target.setHours(0, 0, 0, 0) - today.setHours(0, 0, 0, 0)) / oneDayMs)
+  if (Number.isNaN(diffDays)) return { kind: 'invalid' }
+  if (diffDays === 0) return { kind: 'today' }
+  if (diffDays > 0) return { kind: 'upcoming', days: diffDays }
+  return { kind: 'past', days: Math.abs(diffDays) }
+}
+
 function normalizeSubjectName(value) {
   return String(value || '')
     .trim()
@@ -57,6 +70,7 @@ export default function DashboardSubjects({
   onOpenSubject,
   onStartPractice,
   onOpenTutor,
+  onOpenSubjectPlan,
   onTodayPlannedChange,
   showTopSection = true,
   showLearningPlanSection = true,
@@ -994,6 +1008,7 @@ export default function DashboardSubjects({
             onOpenSubject={onOpenSubject}
             onStartPractice={onStartPractice}
             onOpenTutor={onOpenTutor}
+            onOpenSubjectPlan={onOpenSubjectPlan}
           />
           <aside className="rounded-2xl border border-white/30 bg-white/20 backdrop-blur-md p-4 shadow-[0_4px_12px_rgba(42,56,95,0.03)] h-fit">
             <div className="flex items-center justify-between gap-3">
@@ -1240,21 +1255,81 @@ export default function DashboardSubjects({
                         style={{ backgroundColor: getAccentByIndex(index) }}
                         aria-hidden
                       />
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="pl-1 text-[2rem] leading-[1.05] font-semibold tracking-tight text-studiio-ink" style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <h4
+                          className="min-w-0 flex-1 pl-1 text-[2rem] leading-[1.05] font-semibold tracking-tight text-studiio-ink line-clamp-3 break-words"
+                          style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}
+                        >
                           {subject.name}
                         </h4>
-                        {subject.exam_date && (
-                          <span
-                            className="inline-flex items-center rounded-full px-3 py-1 text-sm font-medium"
-                            style={{
-                              backgroundColor: `${getAccentByIndex(index)}22`,
-                              color: '#3f3b36',
-                            }}
-                          >
-                            {formatCountdown(subject.exam_date)}
-                          </span>
-                        )}
+                        {subject.exam_date && (() => {
+                          const meta = getExamCountdownMeta(subject.exam_date)
+                          const accent = getAccentByIndex(index)
+                          const label = formatCountdown(subject.exam_date)
+                          if (!meta || meta.kind === 'invalid') {
+                            return (
+                              <span
+                                className="shrink-0 inline-flex max-w-[11rem] items-center rounded-full px-3 py-1 text-center text-xs font-medium leading-snug"
+                                style={{
+                                  backgroundColor: `${accent}22`,
+                                  color: '#3f3b36',
+                                }}
+                              >
+                                {label}
+                              </span>
+                            )
+                          }
+                          if (meta.kind === 'today') {
+                            return (
+                              <span
+                                className="shrink-0 flex h-[4.25rem] w-[4.25rem] flex-col items-center justify-center rounded-full border-2 border-white/90 text-center shadow-sm"
+                                style={{
+                                  backgroundColor: `${accent}33`,
+                                  color: '#3f3b36',
+                                }}
+                                aria-label={label}
+                              >
+                                <span className="text-[11px] font-bold leading-tight">Heute</span>
+                                <span className="text-[9px] font-medium leading-tight text-studiio-muted">Klausur</span>
+                              </span>
+                            )
+                          }
+                          if (meta.kind === 'upcoming') {
+                            return (
+                              <span
+                                className="shrink-0 flex h-[4.25rem] w-[4.25rem] flex-col items-center justify-center rounded-full border-2 border-white/90 text-center shadow-sm"
+                                style={{
+                                  backgroundColor: `${accent}33`,
+                                  color: '#3f3b36',
+                                }}
+                                aria-label={label}
+                              >
+                                <span className="text-[9px] font-semibold uppercase tracking-wide text-studiio-muted leading-none">
+                                  Noch
+                                </span>
+                                <span className="text-[1.35rem] font-bold leading-none tabular-nums">{meta.days}</span>
+                                <span className="text-[9px] font-medium text-studiio-muted leading-none">
+                                  {meta.days === 1 ? 'Tag' : 'Tage'}
+                                </span>
+                              </span>
+                            )
+                          }
+                          return (
+                            <span
+                              className="shrink-0 inline-flex max-w-[11rem] flex-col items-center justify-center rounded-full px-2.5 py-1.5 text-center text-[11px] font-medium leading-tight"
+                              style={{
+                                backgroundColor: `${accent}22`,
+                                color: '#3f3b36',
+                              }}
+                              aria-label={label}
+                            >
+                              <span className="text-[9px] text-studiio-muted">Vorbei</span>
+                              <span>
+                                vor {meta.days} Tag{meta.days === 1 ? '' : 'en'}
+                              </span>
+                            </span>
+                          )
+                        })()}
                       </div>
                       <p className="pl-1 text-base text-studiio-muted">
                         {subject.exam_date ? (

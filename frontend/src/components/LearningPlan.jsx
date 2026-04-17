@@ -16,10 +16,6 @@ function formatTaskTime(scheduledAt) {
 }
 
 const WEEKDAY_LABELS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag']
-const WEEK_VIEW_OPTIONS = [
-  { value: 'timeline', label: 'Timeline' },
-  { value: 'extended', label: 'Erweitert' },
-]
 const REPEAT_OPTIONS = [
   { value: 'none', label: 'Keine Wiederholung' },
   { value: 'interval', label: 'Intervall' },
@@ -30,11 +26,18 @@ function formatDayShort(dateStr) {
   return d.toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })
 }
 
+function getWeekdayLabel(dateKey) {
+  const d = new Date(`${dateKey}T12:00:00`)
+  const day = d.getDay() // 0=So ... 6=Sa
+  const index = day === 0 ? 6 : day - 1
+  return WEEKDAY_LABELS[index]
+}
+
 function getDateKey(scheduledAt) {
   if (scheduledAt == null) return null
   const d = new Date(scheduledAt)
   if (Number.isNaN(d.getTime())) return null
-  return d.toISOString().slice(0, 10)
+  return toLocalDateKey(d)
 }
 
 /** Montag einer Woche zu einem Datum (YYYY-MM-DD) */
@@ -43,7 +46,7 @@ function getMondayKey(dateKey) {
   const day = d.getDay()
   const toMonday = day === 0 ? -6 : 1 - day
   d.setDate(d.getDate() + toMonday)
-  return d.toISOString().slice(0, 10)
+  return toLocalDateKey(d)
 }
 
 /** Tasks nach Tagen gruppieren, Tage sortiert */
@@ -56,7 +59,12 @@ function groupTasksByDay(tasks) {
     byDay[key].push(task)
   }
   for (const key of Object.keys(byDay)) {
-    byDay[key].sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))
+    byDay[key].sort((a, b) => {
+      const aDone = !!a.completed_at
+      const bDone = !!b.completed_at
+      if (aDone !== bDone) return aDone ? 1 : -1
+      return new Date(a.scheduled_at) - new Date(b.scheduled_at)
+    })
   }
   const sortedDays = Object.keys(byDay).sort()
   return { byDay, sortedDays }
@@ -82,24 +90,32 @@ function getCurrentWeekMonday() {
   return toLocalDateKey(d)
 }
 
-/** Die 7 Tage (Mo–So) für eine Woche mit gegebenem Montag */
-function getWeekDays(mondayKey) {
-  const [y, m, day] = mondayKey.split('-').map(Number)
-  const mondayDate = new Date(y, m - 1, day)
-  const weekRow = []
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(mondayDate)
-    d.setDate(d.getDate() + i)
-    weekRow.push(toLocalDateKey(d))
+function getThreeDayFocus(startKey) {
+  const [y, m, d] = startKey.split('-').map(Number)
+  const base = new Date(y, m - 1, d)
+  const out = []
+  for (let i = 0; i < 3; i++) {
+    const next = new Date(base)
+    next.setDate(base.getDate() + i)
+    out.push(toLocalDateKey(next))
   }
-  return weekRow
+  return out
 }
 
-function getTaskAccent(type) {
-  if (type === 'tutor') return 'bg-teal-500'
-  if (type === 'vocab') return 'bg-violet-500'
-  if (type === 'exam') return 'bg-amber-500'
-  return 'bg-slate-400'
+const SUBJECT_COLORS = ['#4fb4ad', '#e2ad4f', '#9fc7a3', '#df9a96', '#9ea8c2', '#88b6dc', '#b897f0', '#7fb8a4']
+
+function hashStringToIndex(input, modulo) {
+  const text = String(input || '')
+  let hash = 0
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0
+  }
+  return Math.abs(hash) % modulo
+}
+
+function getSubjectColor(subject) {
+  if (!subject?.id) return '#94a3b8'
+  return SUBJECT_COLORS[hashStringToIndex(subject.id, SUBJECT_COLORS.length)]
 }
 
 function getTaskTypeLabel(type) {
@@ -111,6 +127,10 @@ function getTaskTypeLabel(type) {
 
 function normalizeText(value) {
   return String(value || '').toLocaleLowerCase('de-DE').trim()
+}
+
+function isFileLinkedTask(task) {
+  return !!task?.material_id
 }
 
 function buildRecurringSchedule(baseDate, repeatRule, occurrenceCount, everyValue, everyUnit, infinite = false) {
@@ -143,7 +163,7 @@ function isMissingDescriptionColumn(error) {
   return code === '42703' || (msg.includes('description') && msg.includes('column'))
 }
 
-export default function LearningPlan({ user, subjects, onOpenSubject, onStartPractice, onOpenTutor, refreshTrigger }) {
+export default function LearningPlan({ user, subjects, onOpenSubject, onStartPractice, onOpenTutor, onOpenSubjectPlan, refreshTrigger }) {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -165,8 +185,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   const [saving, setSaving] = useState(false)
   const [completingId, setCompletingId] = useState(null)
   const [editingTask, setEditingTask] = useState(null)
-  const [weekStart, setWeekStart] = useState(() => getCurrentWeekMonday())
-  const [weekView, setWeekView] = useState('timeline')
+  const [expandedTaskId, setExpandedTaskId] = useState('')
   const [draggingTaskId, setDraggingTaskId] = useState(null)
   const [dropTargetDate, setDropTargetDate] = useState(null)
   const [celebration, setCelebration] = useState(null)
@@ -489,6 +508,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   }
 
   async function handleToggle(task) {
+    if (isFileLinkedTask(task)) return
     setCompletingId(task.id)
     const done = !!task.completed_at
     if (done) {
@@ -518,35 +538,23 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     if (!error && data) setTasks((prev) => prev.map((x) => (x.id === task.id ? data : x)))
   }
 
-  function handleTaskCardClick(task) {
-    if (showForm) {
-      startEdit(task)
-      return
-    }
-    handleToggle(task)
-  }
-
   return (
     <section className="rounded-3xl border border-white/40 bg-white/65 p-6 shadow-[0_18px_35px_rgba(57,67,105,0.12)] backdrop-blur-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h2 className="text-lg font-semibold text-studiio-ink">Lernplan</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-full border border-[#d8dee9] bg-[#e9edf3] p-1">
-            {WEEK_VIEW_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setWeekView(opt.value)}
-                className={
-                  weekView === opt.value
-                    ? 'rounded-full bg-[#49a99b] px-3 py-1 text-xs font-medium text-white'
-                    : 'rounded-full px-3 py-1 text-xs font-medium text-studiio-muted hover:bg-white/70'
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          {onOpenSubjectPlan && subjects.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const firstSubject = subjects[0]
+                if (firstSubject) onOpenSubjectPlan(firstSubject)
+              }}
+              className="rounded-full border border-studiio-lavender/70 bg-white px-3 py-2 text-xs font-medium text-studiio-ink hover:bg-studiio-sky/20"
+            >
+              Fachplan öffnen
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -743,7 +751,8 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
         <div className="space-y-5">
           {(() => {
             const { byDay, sortedDays } = groupTasksByDay(tasks)
-            const weekRow = getWeekDays(weekStart)
+            const todayKey = toLocalDateKey(new Date())
+            const weekRow = getThreeDayFocus(todayKey)
 
             const handleDragStart = (e, task) => {
               e.dataTransfer.setData('application/json', JSON.stringify({ id: task.id }))
@@ -773,10 +782,12 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
 
             const renderTaskRow = (task) => {
               const done = !!task.completed_at
+              const fileLinked = isFileLinkedTask(task)
               const subject = subjects.find((s) => s.id === task.subject_id)
               const linkedSubject = resolveSubjectForTask(task)
               const isDragging = draggingTaskId === task.id
-              const accentClass = getTaskAccent(task.type)
+              const accentColor = getSubjectColor(linkedSubject || subject)
+              const isExpanded = expandedTaskId === task.id
               const compactWrapper = `group rounded-xl border bg-white shadow-sm p-2.5 transition ${
                 done ? 'border-emerald-200 bg-emerald-50/40' : 'border-studiio-lavender/40'
               } ${isDragging ? 'opacity-50' : ''} ${showForm ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}`
@@ -786,49 +797,28 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                   draggable={!showForm}
                   onDragStart={(e) => handleDragStart(e, task)}
                   onDragEnd={handleDragEnd}
-                  onClick={() => handleTaskCardClick(task)}
-                  className={
-                    weekView === 'timeline'
-                      ? `rounded-lg border border-studiio-lavender/30 bg-white px-2 py-2 ${isDragging ? 'opacity-50' : ''} ${showForm ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}`
-                      : compactWrapper
-                  }
+                  onClick={() => setExpandedTaskId((prev) => (prev === task.id ? '' : task.id))}
+                  className={compactWrapper}
                 >
-                  {weekView === 'timeline' ? (
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className={`h-7 w-1.5 rounded-full ${accentClass}`} />
-                      <div className="min-w-0 flex-1">
+                  <div className="flex items-start gap-2">
+                    <span className="mt-0.5 h-10 w-1.5 rounded-full" style={{ backgroundColor: accentColor }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
                         <p className={`truncate text-sm font-semibold text-studiio-ink ${done ? 'line-through opacity-70' : ''}`}>{getTaskTitle(task)}</p>
-                        <p className="text-[11px] text-studiio-muted">{formatTaskTime(task.scheduled_at)}</p>
                       </div>
-                      {!showForm && weekView === 'extended' && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            startEdit(task)
-                          }}
-                          className="shrink-0 rounded border border-studiio-lavender/60 px-2 py-1 text-[11px] font-medium text-studiio-ink hover:bg-studiio-sky/20"
-                        >
-                          Bearbeiten
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-start gap-2">
-                        <span className={`mt-0.5 h-10 w-1.5 rounded-full ${accentClass}`} />
-                        <div
-                          className="min-w-0 flex-1"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className={`truncate text-sm font-semibold text-studiio-ink ${done ? 'line-through opacity-70' : ''}`}>{getTaskTitle(task)}</p>
-                          </div>
-                          <p className="mt-0.5 text-[11px] text-studiio-muted">{formatTaskTime(task.scheduled_at)}</p>
-                        </div>
-                      </div>
-                      {!showForm && !done && linkedSubject && weekView === 'extended' && (
+                      <p className="mt-0.5 text-[11px] text-studiio-muted">
+                        {formatTaskTime(task.scheduled_at)}
+                        {linkedSubject?.name ? ` · ${linkedSubject.name}` : ''}
+                        {fileLinked ? ' · automatisch' : ''}
+                      </p>
+                      {isExpanded && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-3.5" onClick={(e) => e.stopPropagation()}>
-                          {task.material_id && onOpenTutor ? (
+                          {!!task.description && (
+                            <p className="w-full rounded border border-studiio-lavender/40 bg-studiio-sky/10 px-2 py-1 text-xs text-studiio-ink">
+                              {task.description}
+                            </p>
+                          )}
+                          {!done && linkedSubject && (task.material_id && onOpenTutor ? (
                             <button
                               type="button"
                               onClick={() => onOpenTutor(linkedSubject, task.material_id)}
@@ -840,11 +830,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                             <button type="button" onClick={() => onOpenSubject(linkedSubject)} className="rounded border border-studiio-lavender/60 px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-sky/20">
                               Fach öffnen
                             </button>
-                          ) : null}
-                        </div>
-                      )}
-                      {!showForm && weekView === 'extended' && (
-                        <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-3.5" onClick={(e) => e.stopPropagation()}>
+                          ) : null)}
                           <button
                             type="button"
                             onClick={() => startEdit(task)}
@@ -852,44 +838,29 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                           >
                             Bearbeiten
                           </button>
+                          {!fileLinked && (
+                            <button
+                              type="button"
+                              disabled={completingId === task.id}
+                              onClick={() => handleToggle(task)}
+                              className="rounded border border-studiio-lavender/60 px-2 py-1 text-xs text-studiio-ink hover:bg-studiio-sky/20 disabled:opacity-60"
+                            >
+                              {done ? 'Als offen markieren' : 'Als erledigt markieren'}
+                            </button>
+                          )}
                         </div>
                       )}
-                    </>
-                  )}
+                    </div>
+                  </div>
                 </li>
               )
             }
             if (sortedDays.length > 0) {
-              const weekLabel = `${formatDayShort(weekRow[0])} – ${formatDayShort(weekRow[6])}`
-              const todayKey = toLocalDateKey(new Date())
+              const weekLabel = `${formatDayShort(weekRow[0])} – ${formatDayShort(weekRow[2])}`
               return (
                 <>
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const [y, m, day] = weekStart.split('-').map(Number)
-                        const d = new Date(y, m - 1, day)
-                        d.setDate(d.getDate() - 7)
-                        setWeekStart(toLocalDateKey(d))
-                      }}
-                      className="rounded-full border border-[#d3d8e0] bg-[#f2f0ea] px-4 py-2 text-sm font-semibold text-[#3b3f52] hover:bg-[#ece8de]"
-                    >
-                      ← Vorherige Woche
-                    </button>
+                  <div className="flex items-center justify-center gap-2 flex-wrap">
                     <p className="text-3xl font-semibold text-[#31344a]" style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}>{weekLabel}</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const [y, m, day] = weekStart.split('-').map(Number)
-                        const d = new Date(y, m - 1, day)
-                        d.setDate(d.getDate() + 7)
-                        setWeekStart(toLocalDateKey(d))
-                      }}
-                      className="rounded-full border border-[#d3d8e0] bg-[#f2f0ea] px-4 py-2 text-sm font-semibold text-[#3b3f52] hover:bg-[#ece8de]"
-                    >
-                      Nächste Woche →
-                    </button>
                   </div>
                   <div className="overflow-hidden">
                     <div
@@ -897,7 +868,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                       style={{
                         gridTemplateColumns: weekRow.map((dateKey) => {
                           if (dateKey < todayKey) return '0.9fr' // vergangene Tage etwas kleiner
-                          if (dateKey === todayKey) return '1.35fr' // heutiger Tag größer
+                          if (dateKey === todayKey) return '1.75fr' // heutiger Tag deutlich größer
                           return '1fr' // kommende Tage normal
                         }).join(' '),
                       }}
@@ -906,7 +877,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                         const dayTasks = byDay[dateKey] || []
                         const isDropTarget = dropTargetDate === dateKey
                         const isToday = dateKey === todayKey
-                        const dayTint = ['#f2dde6', '#e0dcef', '#dbe8f4', '#dcefeb', '#efe8d8', '#efe2dd', '#efdfe6'][di]
+                        const dayTint = ['#f2dde6', '#e0dcef', '#dbe8f4'][di]
                         return (
                           <div
                             key={dateKey}
@@ -926,13 +897,11 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                               <p
                                 className="text-[0.82rem] leading-tight font-semibold text-[#31344a] whitespace-nowrap"
                               >
-                                {WEEKDAY_LABELS[di]}
+                                {getWeekdayLabel(dateKey)}
                               </p>
                               <p className="text-xs text-studiio-muted mt-0.5">{formatDayShort(dateKey)}</p>
                             </div>
-                            <ul className={`flex-1 min-h-0 overflow-auto p-1.5 space-y-1.5 ${
-                              weekView === 'timeline' ? '' : 'divide-y-0'
-                            }`}>
+                            <ul className="flex-1 min-h-0 overflow-auto p-1.5 space-y-1.5">
                               {dayTasks.map((task) => renderTaskRow(task))}
                             </ul>
                           </div>

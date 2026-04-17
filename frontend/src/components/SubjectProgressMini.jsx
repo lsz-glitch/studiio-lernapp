@@ -119,7 +119,9 @@ export default function SubjectProgressMini({ user, subject, onProgress, accentC
       <div>
         <div className="mb-1 flex items-center justify-between text-xs">
           <span className="font-medium text-studiio-ink">Unterlagen</span>
-          <span className="text-studiio-muted">{matPct}%</span>
+          <span className="text-studiio-muted">
+            {materialsTotal ? `${matPct ?? 0}%` : '—'}
+          </span>
         </div>
         <div className="h-2 rounded-full bg-[#eef0ec]">
           <div
@@ -134,7 +136,9 @@ export default function SubjectProgressMini({ user, subject, onProgress, accentC
       <div>
         <div className="mb-1 flex items-center justify-between text-xs">
           <span className="font-medium text-studiio-ink">Vokabeln</span>
-          <span className="text-studiio-muted">{cardPct}%</span>
+          <span className="text-studiio-muted">
+            {cardsTotal ? `${cardPct ?? 0}%` : '—'}
+          </span>
         </div>
         <div className="h-2 rounded-full bg-[#eef0ec]">
           <div

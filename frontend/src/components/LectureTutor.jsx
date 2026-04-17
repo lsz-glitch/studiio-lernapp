@@ -187,6 +187,18 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const pdfBlobRef = useRef(null)
   const latestMessageRef = useRef(null)
   const currentThemeRef = useRef(null)
+  const tutorTasksCompletedRef = useRef(false)
+
+  async function markTutorTasksCompleteIfNeeded() {
+    if (tutorTasksCompletedRef.current) return
+    if (!user?.id || !material?.id) return
+    try {
+      await completeTutorTasksForMaterial(user.id, material.id)
+      tutorTasksCompletedRef.current = true
+    } catch (_) {
+      // stilles Fallback, UI bleibt benutzbar
+    }
+  }
 
   // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
   useEffect(() => {
@@ -347,6 +359,9 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     .filter(Boolean)
     .map((p) => `Seite ${p.pageNumber}:\n${p.combinedSummary || p.textExcerpt || ''}`)
     .join('\n\n')
+  const hasPdfText = pdfExtractedText != null && pdfExtractedText.length > 0
+  const hasPageContext = String(visiblePageContext || '').trim().length > 0
+  const canExplainWithContext = hasPdfText || hasPageContext
 
   // PDF-Text vom Backend extrahieren (mit Retries), damit der Tutor die Vorlesung immer lesen kann
   useEffect(() => {
@@ -755,12 +770,14 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   }
 
   async function sendToClaude({ userMessage, mode }) {
-    if (mode === 'explain' && (!pdfExtractedText || pdfExtractedText.length === 0)) {
+    if (mode === 'explain' && !canExplainWithContext) {
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: 'Der PDF-Inhalt wurde noch nicht geladen. Bitte warte kurz oder klicke auf „PDF-Text erneut laden“. Der Tutor braucht den Text, um die Vorlesung zu erklären.',
+          content:
+            'Der Tutor hat noch keinen lesbaren Folienkontext. Bitte warte kurz oder nutze „Erneut laden“. ' +
+            'Sobald PDF-Text oder Seitenkontext da ist, startet die Erklärung automatisch.',
         },
       ])
       return
@@ -959,6 +976,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     const shouldAdvanceSection = nextThemeMode === 'section'
     if (shouldAdvanceSection && pdfNumPages > 0 && currentEndPage >= pdfNumPages) {
       setIsCompleted(true)
+      markTutorTasksCompleteIfNeeded()
       try {
         localStorage.setItem(`studiio_tutor_completed_${material.id}`, 'true')
       } catch (_) {}
@@ -1069,6 +1087,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
 
   function handleFinishTutor() {
     setIsCompleted(true)
+    markTutorTasksCompleteIfNeeded()
     try {
       localStorage.setItem(`studiio_tutor_completed_${material.id}`, 'true')
     } catch (_) {}
@@ -1076,7 +1095,6 @@ function LectureTutorInner({ user, subject, material, onBack }) {
 
   // Erst starten, wenn der Tutor den PDF-Inhalt lesen kann (extrahierter Text da)
   useEffect(() => {
-    const hasPdfText = pdfExtractedText != null && pdfExtractedText.length > 0
     const hasExistingState =
       messages.length > 0 ||
       explanationHistory.length > 0 ||
@@ -1091,7 +1109,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       pdfUrl &&
       !pdfError &&
       !pdfTextLoading &&
-      hasPdfText &&
+      canExplainWithContext &&
       messages.length === 0
     ) {
       setStarted(true)
@@ -1101,12 +1119,11 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       else sendToClaude({ userMessage: '', mode: 'explain' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfUrl, pdfError, pdfTextLoading, pdfExtractedText, started, initialRequestDone, messages.length, isExerciseMode, progressHydrated, explanationHistory.length, currentTaskText, topicIndex])
+  }, [pdfUrl, pdfError, pdfTextLoading, canExplainWithContext, started, initialRequestDone, messages.length, isExerciseMode, progressHydrated, explanationHistory.length, currentTaskText, topicIndex])
 
   // Recovery: Falls ein gespeicherter Zustand "angefangen" sagt, aber keine sichtbare Aufgabe/Erklärung existiert,
   // einmalig den aktuellen Schritt nachladen, damit der Tutor nicht leer hängen bleibt.
   useEffect(() => {
-    const hasPdfText = pdfExtractedText != null && pdfExtractedText.length > 0
     const hasNoVisibleTutorContent =
       messages.length === 0 &&
       explanationHistory.length === 0 &&
@@ -1117,7 +1134,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       hasNoVisibleTutorContent &&
       !loading &&
       !pdfTextLoading &&
-      hasPdfText &&
+      canExplainWithContext &&
       !bootstrapping
     ) {
       setBootstrapping(true)
@@ -1134,7 +1151,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     currentTaskText,
     loading,
     pdfTextLoading,
-    pdfExtractedText,
+    canExplainWithContext,
     isExerciseMode,
     topicIndex,
     bootstrapping,
@@ -1186,7 +1203,6 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             const totalSec = (Date.now() - sessionStartRef.current) / 1000
             const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
             if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
-            if (user?.id && material?.id) await completeTutorTasksForMaterial(user.id, material.id)
             onBack()
           }}
           className="inline-flex items-center gap-1 text-sm text-studiio-accent hover:underline font-medium"

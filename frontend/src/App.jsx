@@ -8,6 +8,7 @@ const SettingsClaudeKey = lazy(() => import('./components/SettingsClaudeKey'))
 const DashboardSubjects = lazy(() => import('./components/DashboardSubjects'))
 const SubjectDetail = lazy(() => import('./components/SubjectDetail'))
 const StatisticsPage = lazy(() => import('./components/StatisticsPage'))
+const SubjectPlanMode = lazy(() => import('./components/SubjectPlanMode'))
 
 function getDisplayName(user) {
   const metaName =
@@ -76,6 +77,7 @@ function App() {
   const [authMode, setAuthMode] = useState('login') // 'login' | 'register'
   const [activeView, setActiveView] = useState('overview') // 'overview' | 'subjects' | 'statistics' | 'settings'
   const [selectedSubject, setSelectedSubject] = useState(null)
+  const [showStandaloneSubjectPlan, setShowStandaloneSubjectPlan] = useState(false)
   const [openToPractice, setOpenToPractice] = useState(false)
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
   const [todayPlannedTasks, setTodayPlannedTasks] = useState(0)
@@ -330,12 +332,35 @@ function App() {
       : 'Deine Lernübersicht auf einen Blick.'
 
   function renderMainContent() {
+    if (selectedSubject && showStandaloneSubjectPlan) {
+      return (
+        <SubjectPlanMode
+          user={user}
+          subject={selectedSubject}
+          onBack={() => {
+            setShowStandaloneSubjectPlan(false)
+          }}
+          onActiveSubjectChange={(nextSubject) => {
+            if (!nextSubject?.id) return
+            setSelectedSubject(nextSubject)
+          }}
+          showHeader
+          showCatalog
+          interactive
+          allowSubjectSelection
+        />
+      )
+    }
+
     if (selectedSubject) {
       return (
         <SubjectDetail
           user={user}
           subject={selectedSubject}
-          onBack={() => setSelectedSubject(null)}
+          onBack={() => {
+            setShowStandaloneSubjectPlan(false)
+            setSelectedSubject(null)
+          }}
           openToPractice={openToPractice}
           onOpenToPracticeHandled={() => setOpenToPractice(false)}
           openToTutorMaterialId={openToTutorMaterialId}
@@ -349,14 +374,23 @@ function App() {
         <DashboardSubjects
           user={user}
           onTodayPlannedChange={setTodayPlannedTasks}
-          onOpenSubject={(subject) => setSelectedSubject(subject)}
+          onOpenSubject={(subject) => {
+            setShowStandaloneSubjectPlan(false)
+            setSelectedSubject(subject)
+          }}
           onStartPractice={(subject) => {
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(subject)
             setOpenToPractice(true)
           }}
           onOpenTutor={(subject, materialId) => {
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(subject)
             setOpenToTutorMaterialId(materialId)
+          }}
+          onOpenSubjectPlan={(subject) => {
+            setSelectedSubject(subject)
+            setShowStandaloneSubjectPlan(true)
           }}
           showTopSection
           showLearningPlanSection
@@ -370,14 +404,23 @@ function App() {
         <DashboardSubjects
           user={user}
           onTodayPlannedChange={setTodayPlannedTasks}
-          onOpenSubject={(subject) => setSelectedSubject(subject)}
+          onOpenSubject={(subject) => {
+            setShowStandaloneSubjectPlan(false)
+            setSelectedSubject(subject)
+          }}
           onStartPractice={(subject) => {
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(subject)
             setOpenToPractice(true)
           }}
           onOpenTutor={(subject, materialId) => {
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(subject)
             setOpenToTutorMaterialId(materialId)
+          }}
+          onOpenSubjectPlan={(subject) => {
+            setSelectedSubject(subject)
+            setShowStandaloneSubjectPlan(true)
           }}
           showTopSection={false}
           showLearningPlanSection={false}
@@ -392,10 +435,12 @@ function App() {
           user={user}
           onGoToLearningPlan={() => {
             setActiveView('overview')
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(null)
           }}
           onGoToSubjects={() => {
             setActiveView('subjects')
+            setShowStandaloneSubjectPlan(false)
             setSelectedSubject(null)
           }}
         />
@@ -478,6 +523,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   setActiveView('overview')
+                  setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
                 }}
                 className={navActiveView === 'overview' ? 'rounded-full bg-[#cdeee8] px-3 py-1 font-medium text-[#245b55]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e9f4fb]'}
@@ -488,6 +534,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   setActiveView('subjects')
+                  setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
                 }}
                 className={navActiveView === 'subjects' ? 'rounded-full bg-[#f4e5cb] px-3 py-1 font-medium text-[#6b4c15]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#f9f2e5]'}
@@ -498,6 +545,7 @@ function App() {
                 type="button"
                 onClick={() => {
                   setActiveView('statistics')
+                  setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
                 }}
                 className={navActiveView === 'statistics' ? 'rounded-full bg-[#d8ecff] px-3 py-1 font-medium text-[#23507a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#e8f2fb]'}
@@ -506,7 +554,11 @@ function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveView('settings')}
+                onClick={() => {
+                  setActiveView('settings')
+                  setShowStandaloneSubjectPlan(false)
+                  setSelectedSubject(null)
+                }}
                 className={navActiveView === 'settings' ? 'rounded-full bg-[#ece0f8] px-3 py-1 font-medium text-[#5f4b7a]' : 'rounded-full px-3 py-1 text-studiio-muted hover:bg-[#efe8fb]'}
               >
                 Einstellungen

@@ -9,7 +9,7 @@
 export const FALLBACK_SUPABASE_URL = ''
 export const FALLBACK_SUPABASE_ANON_KEY = ''
 
-export const MAX_STORAGE_PER_USER_MB = 20
+export const MAX_STORAGE_PER_USER_MB = 100
 export const DEFAULT_EXAM_TIMER_MINUTES = 90
 export const DEFAULT_MONTHLY_AI_BUDGET_USD = 10
 

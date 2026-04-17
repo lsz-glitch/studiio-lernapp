@@ -2,9 +2,19 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
 import FlashcardEditModal from './FlashcardEditModal'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
-import { getApiBase } from '../config'
+import { getApiBase, MAX_STORAGE_PER_USER_MB } from '../config'
 
-const MAX_STORAGE_PER_USER_BYTES = 20 * 1024 * 1024 // 20 MB
+const MAX_STORAGE_PER_USER_BYTES = MAX_STORAGE_PER_USER_MB * 1024 * 1024
+
+function isHarmlessAbortError(err) {
+  const message = String(err?.message || '').toLowerCase()
+  const code = String(err?.code || '').toLowerCase()
+  return (
+    message.includes('aborterror') ||
+    message.includes('lock was stolen by another request') ||
+    code === 'aborterror'
+  )
+}
 
 const CATEGORY_OPTIONS = [
   'Vorlesung',
@@ -17,10 +27,11 @@ const CATEGORY_OPTIONS = [
 function getCategoryHeaderClasses(category) {
   const c = String(category || '').toLowerCase()
   if (c.includes('vorlesung')) return 'bg-[#e8eefc] border-[#c9d8f7]'
-  if (c.includes('übung') || c.includes('uebung') || c.includes('tutorium')) return 'bg-[#e7f7ef] border-[#bfead3]'
+  if (c.includes('tutorium')) return 'bg-[#e5f6fb] border-[#a8d9ea]'
+  if (c.includes('übung') || c.includes('uebung')) return 'bg-[#e7f7ef] border-[#bfead3]'
   if (c.includes('probe')) return 'bg-[#fff2e5] border-[#ffd8b8]'
   if (c.includes('zusatz')) return 'bg-[#f3edff] border-[#dbccff]'
-  return 'bg-white/70 border-studiio-lavender/40'
+  return 'bg-[#f4f2f8] border-[#cfc8e0]'
 }
 
 export default function SubjectMaterials({ user, subject, refreshTrigger, onOpenLecture, onOpenFlashcardCreate, onStartPractice }) {
@@ -65,6 +76,10 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
       if (!isMounted) return
 
       if (err) {
+        if (isHarmlessAbortError(err)) {
+          setLoading(false)
+          return
+        }
         console.error('Fehler beim Laden der Materialien:', err)
         setError(
           `Dateien konnten nicht geladen werden: ${
@@ -606,16 +621,16 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
             Noch keine Dateien für dieses Fach hochgeladen.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             {groupedMaterials.map(([category, items]) => {
               const expanded = !!expandedCategories[category]
               const vocabReadyCount = items.filter((m) => materialIdsWithGeneratedCards.has(m.id)).length
               return (
-              <div key={category}>
+              <div key={category} className="flex flex-col gap-1">
                 <button
                   type="button"
                   onClick={() => setExpandedCategories((prev) => ({ ...prev, [category]: !expanded }))}
-                  className={`mb-1 w-full flex items-center justify-between rounded-lg border px-3 py-1.5 text-left hover:brightness-[0.98] ${getCategoryHeaderClasses(category)}`}
+                  className={`w-full flex items-center justify-between rounded-lg border px-3 py-1.5 text-left hover:brightness-[0.98] ${getCategoryHeaderClasses(category)}`}
                 >
                   <div className="min-w-0">
                     <h6 className="text-sm font-semibold text-studiio-ink">
@@ -718,11 +733,11 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
               </div>
             )})}
 
-            <div className="pt-1">
+            <div className="flex flex-col gap-1">
               <button
                 type="button"
                 onClick={() => setVocabByDocumentExpanded((v) => !v)}
-                className="mb-1 w-full flex items-center justify-between rounded-lg border border-[#c9d8f7] bg-[#e8eefc] px-3 py-1.5 text-left hover:brightness-[0.98]"
+                className="w-full flex items-center justify-between rounded-lg border border-[#e8b8c8] bg-[#fceef2] px-3 py-1.5 text-left hover:brightness-[0.98]"
               >
                 <div>
                   <h6 className="text-sm font-semibold text-studiio-ink">
@@ -735,7 +750,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                 <span className="text-sm text-studiio-muted ml-2">{vocabByDocumentExpanded ? '▾' : '▸'}</span>
               </button>
               {vocabByDocumentExpanded && (
-                <ul className="mb-2 space-y-1">
+                <ul className="space-y-1">
                   {materials.map((m) => {
                     const count = vocabCountsByMaterial[m.id] || 0
                     return (
@@ -772,10 +787,13 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                 </ul>
               )}
 
+            </div>
+
+            <div className="flex flex-col gap-1">
               <button
                 type="button"
                 onClick={() => setQuickDraftExpanded((v) => !v)}
-                className="w-full flex items-center justify-between rounded-lg border border-[#dbccff] bg-[#f3edff] px-3 py-1.5 text-left hover:brightness-[0.98]"
+                className="w-full flex items-center justify-between rounded-lg border border-[#e8d48a] bg-[#fff9e6] px-3 py-1.5 text-left hover:brightness-[0.98]"
               >
                 <div>
                   <h6 className="text-sm font-semibold text-studiio-ink">
@@ -786,7 +804,7 @@ export default function SubjectMaterials({ user, subject, refreshTrigger, onOpen
                 <span className="text-sm text-studiio-muted ml-2">{quickDraftExpanded ? '▾' : '▸'}</span>
               </button>
               {quickDraftExpanded && (
-                <ul className="mt-1 space-y-1">
+                <ul className="space-y-1">
                   {quickDraftCards.length === 0 ? (
                     <li className="rounded-lg border border-studiio-lavender/40 bg-white/85 px-3 py-2 text-xs text-studiio-muted">
                       Noch keine Schnellkarteikarten vorhanden.
