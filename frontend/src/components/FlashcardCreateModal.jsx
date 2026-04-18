@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { supabase } from '../supabaseClient'
 import { getApiBase } from '../config'
 import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
+import { resolveClaudeProxyFailureMessage } from '../utils/aiBillingError'
 import { getUserAiConfig } from '../utils/aiProvider'
 
 const FORMAT_LABELS = {
@@ -111,7 +112,9 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
           'API-Route nicht gefunden. Bitte starte den API-Server neu (im Projektordner: npm run api) und lade die Seite neu.'
         )
       }
-      if (!resGen.ok) throw new Error(genData.error || genData.details || 'Generierung fehlgeschlagen.')
+      if (!resGen.ok) {
+        throw new Error(resolveClaudeProxyFailureMessage({ responseText: rawGen, parsed: genData }))
+      }
       const cards = genData.cards || []
       if (cards.length === 0) {
         throw new Error(

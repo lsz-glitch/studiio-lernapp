@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import { getApiBase } from '../config'
 import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
+import { resolveClaudeProxyFailureMessage } from '../utils/aiBillingError'
 import { getUserAiConfig } from '../utils/aiProvider'
 const FORMATS = ['definition', 'open', 'multiple_choice', 'single_choice']
 
@@ -59,8 +60,7 @@ export default function FlashcardAddManualModal({ user, subject, materialOptions
         throw new Error(MSG_API_WRONG_ENDPOINT)
       }
       if (!res.ok) {
-        const msg = [data.error, data.details].filter(Boolean).join(' — ') || 'Vorschlag fehlgeschlagen.'
-        throw new Error(msg)
+        throw new Error(resolveClaudeProxyFailureMessage({ responseText: raw, parsed: data }))
       }
       const list = Array.isArray(data?.options) ? data.options : []
       const text = list.length > 0 ? list.join('\n') : [answer.trim(), 'Option 2', 'Option 3', 'Option 4'].filter(Boolean).join('\n')

@@ -3,6 +3,10 @@ import { supabase } from '../supabaseClient'
 import { completeVocabTasksForSubjectToday } from '../utils/learningPlan'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import ReactMarkdown from 'react-markdown'
+import { getApiBase } from '../config'
+import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
+import { getUserAiConfig } from '../utils/aiProvider'
+import { resolveClaudeProxyFailureMessage } from '../utils/aiBillingError'
 
 // Anki-ähnlich: Intervall-Stufen in Tagen
 const INTERVAL_STEPS = [0, 1, 3, 7, 14, 30, 60]
@@ -183,6 +187,9 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
       }
       if (isBackendInfoRootResponse(result)) {
         throw new Error(MSG_API_WRONG_ENDPOINT)
+      }
+      if (!res.ok) {
+        throw new Error(resolveClaudeProxyFailureMessage({ responseText: raw, parsed: result }))
       }
       const correct = !!result.correct
       const quality = normalizeReviewQuality(result.quality, correct ? 'good' : 'again')

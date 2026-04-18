@@ -616,7 +616,12 @@ app.post('/api/build-material-context', async (req, res) => {
     const fingerprint = makeMaterialFingerprint({ materialId, storagePath })
     const inMem = materialPageContextCache.get(materialId)
     if (inMem && inMem.fingerprint === fingerprint && Array.isArray(inMem.pages) && inMem.pages.length > 0) {
-      return res.status(200).json({ cached: true, pages: inMem.pages, source: 'memory-cache' })
+      return res.status(200).json({
+        cached: true,
+        pages: inMem.pages,
+        source: 'memory-cache',
+        ...(inMem.contextAiFailureBody ? { contextAiFailureBody: inMem.contextAiFailureBody } : {}),
+      })
     }
 
     const persisted = await loadPersistedPageContexts(materialId, fingerprint)
@@ -637,6 +642,7 @@ app.post('/api/build-material-context', async (req, res) => {
     const lectureOverview = fullText.slice(0, 16000)
 
     const pages = []
+    let contextAiFailureBody = null
     for (let i = 0; i < limitedPages.length; i += 1) {
       const pageText = limitedPages[i]
       const pageNumber = i + 1
@@ -668,6 +674,9 @@ app.post('/api/build-material-context', async (req, res) => {
         if (out.status >= 200 && out.status < 300 && out.text?.trim()) {
           combinedSummary = out.text.trim()
           sourceType = 'text_plus_ai_summary'
+        } else if (!contextAiFailureBody && (out.status < 200 || out.status >= 300)) {
+          contextAiFailureBody =
+            out.data && typeof out.data === 'object' ? out.data : { error: { message: `HTTP ${out.status}` } }
         }
       }
 
@@ -691,8 +700,13 @@ app.post('/api/build-material-context', async (req, res) => {
       })
     }
 
-    materialPageContextCache.set(materialId, { fingerprint, pages })
-    return res.status(200).json({ cached: false, pages, source: 'fresh-build' })
+    materialPageContextCache.set(materialId, { fingerprint, pages, contextAiFailureBody })
+    return res.status(200).json({
+      cached: false,
+      pages,
+      source: 'fresh-build',
+      ...(contextAiFailureBody ? { contextAiFailureBody } : {}),
+    })
   } catch (err) {
     console.error('[build-material-context] Fehler:', err)
     return res.status(500).json({ error: 'Kontextaufbau fehlgeschlagen.', details: err.message })

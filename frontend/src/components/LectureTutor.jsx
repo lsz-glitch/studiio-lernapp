@@ -6,11 +6,18 @@ import { completeTutorTasksForMaterial } from '../utils/learningPlan'
 import CompletionCelebration from './CompletionCelebration'
 import { getApiBase } from '../config'
 import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
+import { pageContextAiBannerFromFailureBody, resolveClaudeProxyFailureMessage } from '../utils/aiBillingError'
 import MiniFocusHint from './MiniFocusHint'
 import { resumeMiniFocusSession } from '../utils/miniFocusSession'
 import { dispatchPomodoroPauseForLeave, dispatchPomodoroResumeAfterTask } from '../utils/pomodoroFocusBridge'
 import { confirmFocusLeaveIfNeeded } from '../utils/focusLeaveConfirm'
 import { getUserAiConfig } from '../utils/aiProvider'
+import { Document, Page, pdfjs } from 'react-pdf'
+import 'react-pdf/dist/Page/AnnotationLayer.css'
+import 'react-pdf/dist/Page/TextLayer.css'
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
 const MAX_PAGES_PER_EXPLANATION = 2
@@ -162,6 +169,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   const [subjectContextLoading, setSubjectContextLoading] = useState(false)
   const [pageContexts, setPageContexts] = useState([])
   const [pageContextLoading, setPageContextLoading] = useState(false)
+  const [pageContextAiBanner, setPageContextAiBanner] = useState(null)
   const [pdfTextRetryKey, setPdfTextRetryKey] = useState(0)
   const [pdfNumPages, setPdfNumPages] = useState(0)
   const [topicIndex, setTopicIndex] = useState(1)
@@ -236,6 +244,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     if (!material?.id || !material?.storage_path || !user?.id) return
     let cancelled = false
     setPageContextLoading(true)
+    setPageContextAiBanner(null)
 
     ;(async () => {
       try {
@@ -255,11 +264,22 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         if (cancelled) return
         if (!res.ok || data?.error || !Array.isArray(data?.pages)) {
           setPageContexts([])
+          if (!cancelled && (data?.error || !res.ok)) {
+            setPageContextAiBanner(resolveClaudeProxyFailureMessage({ responseText: JSON.stringify(data), parsed: data }))
+          }
           return
         }
         setPageContexts(data.pages)
+        if (!cancelled) {
+          setPageContextAiBanner(
+            data?.contextAiFailureBody ? pageContextAiBannerFromFailureBody(data.contextAiFailureBody) : null,
+          )
+        }
       } catch (_) {
-        if (!cancelled) setPageContexts([])
+        if (!cancelled) {
+          setPageContexts([])
+          setPageContextAiBanner(null)
+        }
       } finally {
         if (!cancelled) setPageContextLoading(false)
       }
@@ -701,13 +721,13 @@ function LectureTutorInner({ user, subject, material, onBack }) {
     })
     const responseText = await response.text()
     if (!response.ok) {
-      let msg = 'KI-Anfrage fehlgeschlagen.'
+      let parsed
       try {
-        const err = JSON.parse(responseText)
-        if (err?.error?.message) msg = err.error.message
-        else if (typeof err?.error === 'string') msg = err.error
-      } catch (_) {}
-      throw new Error(msg)
+        parsed = JSON.parse(responseText)
+      } catch (_) {
+        parsed = null
+      }
+      throw new Error(resolveClaudeProxyFailureMessage({ responseText, parsed }))
     }
     let data
     try {
@@ -904,23 +924,14 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       const responseText = await response.text()
 
       if (!response.ok) {
-        let message = 'Die KI-Antwort ist fehlgeschlagen. Bitte später erneut versuchen.'
+        let errData = {}
         try {
-          const errData = JSON.parse(responseText)
-          const errObj = typeof errData.error === 'object' ? errData.error : null
-          if (errObj?.message) {
-            message = errObj.message
-          } else if (typeof errData.error === 'string') {
-            message = errData.error
-          } else if (errData.message) {
-            message = errData.message
-          }
-          if (errData.details) message += ` — ${errData.details}`
+          errData = JSON.parse(responseText)
         } catch (_) {
-          if (responseText) message = responseText.slice(0, 300)
+          errData = {}
         }
         console.error('[LectureTutor] Claude-API Fehler:', response.status, responseText)
-        throw new Error(message)
+        throw new Error(resolveClaudeProxyFailureMessage({ responseText, parsed: errData }))
       }
 
       let data
@@ -1200,7 +1211,6 @@ function LectureTutorInner({ user, subject, material, onBack }) {
 
   const pdfBaseWidth = 470
   const pdfWidth = Math.round(pdfBaseWidth * pdfZoom)
-  const pdfHeight = Math.round(pdfWidth * (4 / 3))
 
   if (isCompleted) {
     const fileLabel =
@@ -1286,30 +1296,43 @@ function LectureTutorInner({ user, subject, material, onBack }) {
                 </p>
               </div>
             ) : pdfUrl ? (
-              <div className="w-full h-full overflow-auto flex flex-col items-center justify-start p-0 gap-2">
-                {pagesToDisplay.map((page) => (
-                  <iframe
-                    key={`${material.id}-${page}-${pdfZoom}`}
-                    src={`${pdfUrl}#page=${page}&zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0`}
-                    title={`${material.filename} – Seite ${page}`}
-                    className="flex-shrink-0 border-0 bg-white pointer-events-none"
-                    style={{
-                      width: pdfWidth,
-                      height: pdfHeight,
-                      minWidth: 240,
-                      minHeight: 320,
-                    }}
-                  />
-                ))}
+              <div className="w-full h-full overflow-auto flex flex-col items-center justify-start gap-3 p-2">
+                <Document
+                  key={`${material.id}-${pdfUrl}`}
+                  file={pdfUrl}
+                  loading={<p className="text-sm text-studiio-muted py-6">PDF wird gerendert …</p>}
+                  onLoadSuccess={({ numPages: docPages }) => {
+                    if (typeof docPages === 'number' && docPages > 0) {
+                      setPdfNumPages((prev) => Math.max(prev || 0, docPages))
+                    }
+                  }}
+                  onLoadError={(err) => {
+                    console.error('[LectureTutor] react-pdf Document:', err)
+                    setPdfError(
+                      'Die PDF-Vorschau konnte nicht geladen werden. Du kannst die Datei unten im System-PDF öffnen.',
+                    )
+                  }}
+                  className="flex flex-col items-center gap-3"
+                >
+                  {pagesToDisplay.map((page) => (
+                    <Page
+                      key={`${material.id}-p${page}-${pdfZoom}`}
+                      pageNumber={page}
+                      width={pdfWidth}
+                      className="border border-studiio-lavender/40 bg-white shadow-sm"
+                      renderAnnotationLayer
+                      renderTextLayer
+                    />
+                  ))}
+                </Document>
                 <p className="text-xs text-studiio-muted">
-                  Zeigt die Folienansicht „Load failed“?{' '}
                   <a
                     href={pdfUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-studiio-accent hover:underline"
                   >
-                    PDF in neuem Tab öffnen
+                    PDF im neuen Tab öffnen
                   </a>
                 </p>
               </div>
@@ -1386,6 +1409,19 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             <p className="text-sm text-studiio-muted">
               Rückfragen, Beispiele, Zusammenfassungen zu den Folien.
             </p>
+            {pageContextAiBanner && (
+              <div
+                className="mt-2 rounded-lg border border-amber-200 bg-amber-50/90 px-3 py-2 text-xs text-studiio-ink leading-snug"
+                role="status"
+              >
+                <span className="font-semibold text-amber-900">Seitenkontext: </span>
+                {pageContextAiBanner}
+                {' '}
+                <span className="text-studiio-muted">
+                  Der Tutor nutzt weiterhin den vollen PDF-Text, falls dieser geladen ist.
+                </span>
+              </div>
+            )}
             {explanationHistory.length > 0 && (
               <div className="mt-2 rounded-lg bg-studiio-lavender/20 border border-studiio-lavender/50 p-2 text-xs">
                 <div className="flex items-center justify-between">
