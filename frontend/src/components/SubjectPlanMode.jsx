@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient'
+import { deleteTask } from '../utils/learningPlan'
 
 function toLocalDateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -15,6 +16,36 @@ function toDateKeyFromIso(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
   return toLocalDateKey(d)
+}
+
+/** Nur wirklich abgeschlossene Plan-Aufgaben (für grüne Hervorhebung). */
+function isLearningPlanTaskComplete(task) {
+  const c = task?.completed_at
+  if (c == null) return false
+  if (typeof c === 'string' && !c.trim()) return false
+  return true
+}
+
+/** Offene Aufgaben von vergangenen Tagen unter „heute“ bündeln, damit sie nicht verschwinden. */
+function enrichGroupedByDayWithOverdue(grouped, todayKey) {
+  if (!grouped || !todayKey) return grouped || {}
+  const overdue = []
+  for (const [key, list] of Object.entries(grouped)) {
+    if (key >= todayKey) continue
+    for (const t of list || []) {
+      if (!isLearningPlanTaskComplete(t)) overdue.push(t)
+    }
+  }
+  if (!overdue.length) return grouped
+  overdue.sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at))
+  const combined = [...overdue, ...(grouped[todayKey] || [])]
+  combined.sort((a, b) => {
+    const aDone = isLearningPlanTaskComplete(a)
+    const bDone = isLearningPlanTaskComplete(b)
+    if (aDone !== bDone) return aDone ? 1 : -1
+    return new Date(a.scheduled_at) - new Date(b.scheduled_at)
+  })
+  return { ...grouped, [todayKey]: combined }
 }
 
 function canCreateVocabForMaterial(material) {
@@ -48,14 +79,100 @@ function buildPlanningDays(subject) {
   return out
 }
 
+/** Alle Tage anzeigen, an denen mindestens eine Aufgabe liegt (zusätzlich zur Basis-Zeitleiste). */
+function mergePlanningDaysWithTaskDates(baseDays, taskRows) {
+  const set = new Set(baseDays || [])
+  for (const task of taskRows || []) {
+    const k = toDateKeyFromIso(task?.scheduled_at)
+    if (k) set.add(k)
+  }
+  return [...set].sort()
+}
+
 function isMissingDescriptionColumn(error) {
   const code = String(error?.code || '')
   const msg = String(error?.message || '').toLowerCase()
   return code === '42703' || (msg.includes('description') && msg.includes('column'))
 }
 
+function isMissingExternalUrlColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('external_url') && msg.includes('column'))
+}
+
 function normalizeText(value) {
   return String(value || '').trim().toLocaleLowerCase('de-DE')
+}
+
+/** Dateinamen kommen manchmal HTML-escaped aus Metadaten — für die Anzeige decodieren. */
+function decodeHtmlEntities(text) {
+  if (text == null || text === '') return ''
+  const s = String(text)
+  if (typeof document === 'undefined') {
+    return s
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ')
+  }
+  const ta = document.createElement('textarea')
+  ta.innerHTML = s
+  return ta.value
+}
+
+/** Lange Titel zweizeilig mit festem Label, Dateiname mit hartem Umbruch (lange PDF-Namen). */
+function splitCatalogTitle(title) {
+  const raw = decodeHtmlEntities(title || '')
+  if (/^Tutor:\s*/i.test(raw)) {
+    return { label: 'Tutor', body: raw.replace(/^Tutor:\s*/i, '').trim() }
+  }
+  if (/^Vokabeln erstellen:\s*/i.test(raw)) {
+    return { label: 'Vokabeln erstellen', body: raw.replace(/^Vokabeln erstellen:\s*/i, '').trim() }
+  }
+  return { label: null, body: raw }
+}
+
+function renderPlanTaskTitle(title) {
+  const parts = splitCatalogTitle(title)
+  if (parts.label) {
+    return (
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">{parts.label}</p>
+        <p className="break-all text-xs font-medium leading-snug text-studiio-ink">{parts.body}</p>
+      </div>
+    )
+  }
+  return <p className="min-w-0 flex-1 break-words text-xs font-medium text-studiio-ink">{parts.body}</p>
+}
+
+/** Gleiche Kategorien wie beim Material-Upload — Tutor- und Vokabeln-Katalog gruppiert danach. */
+const TUTOR_MATERIAL_CATEGORY_ORDER = ['Vorlesung', 'Übung', 'Tutorium', 'Probeklausur', 'Zusatzmaterialien']
+
+function groupKeyFromMaterialCategoryValue(category) {
+  const cat = String(category || '').trim()
+  if (!cat) return 'Ohne Kategorie'
+  if (TUTOR_MATERIAL_CATEGORY_ORDER.includes(cat)) return cat
+  return `other:${cat}`
+}
+
+/** Standard-Reihenfolge aus Bucket (ohne Sonder-Schlüssel wie __pending__). */
+function orderedMaterialCategoryGroups(bucket) {
+  const out = []
+  for (const name of TUTOR_MATERIAL_CATEGORY_ORDER) {
+    const arr = bucket.get(name)
+    if (arr?.length) out.push({ key: name, label: name, items: arr })
+  }
+  const otherKeys = [...bucket.keys()].filter((k) => String(k).startsWith('other:')).sort()
+  for (const k of otherKeys) {
+    const arr = bucket.get(k)
+    if (arr?.length) out.push({ key: k, label: String(k).replace(/^other:/, ''), items: arr })
+  }
+  const ohne = bucket.get('Ohne Kategorie')
+  if (ohne?.length) out.push({ key: 'ohne', label: 'Ohne Kategorie', items: ohne })
+  return out
 }
 
 export default function SubjectPlanMode({
@@ -68,6 +185,8 @@ export default function SubjectPlanMode({
   onTaskClick,
   allowSubjectSelection = false,
   onActiveSubjectChange,
+  /** Wenn true: Höhe kommt vom Eltern-Container (z. B. Modal) statt Viewport-Rechnung. */
+  fillParent = false,
 }) {
   const [tasks, setTasks] = useState([])
   const [allTasks, setAllTasks] = useState([])
@@ -90,11 +209,20 @@ export default function SubjectPlanMode({
   const [commentDrafts, setCommentDrafts] = useState({})
   const [savingCommentId, setSavingCommentId] = useState('')
   const [activeTaskId, setActiveTaskId] = useState('')
+  const [planModeError, setPlanModeError] = useState('')
   const activeSubject = useMemo(
     () => availableSubjects.find((s) => s.id === activeSubjectId) || subject,
     [availableSubjects, activeSubjectId, subject],
   )
-  const planningDays = useMemo(() => buildPlanningDays(activeSubject), [activeSubject?.exam_date])
+  const planningDays = useMemo(() => {
+    const todayKey = toLocalDateKey(new Date())
+    const base = buildPlanningDays(activeSubject)
+    const fromSubjectTasks = mergePlanningDaysWithTaskDates(base, tasks)
+    const merged = !showAllTasks
+      ? fromSubjectTasks
+      : mergePlanningDaysWithTaskDates(fromSubjectTasks, allTasks)
+    return merged.filter((k) => k >= todayKey)
+  }, [activeSubject?.exam_date, tasks, showAllTasks, allTasks])
 
   const pendingTutorStorageKey = `studiio_subject_plan_pending_tutor_${user?.id || 'nouser'}_${activeSubjectId || 'nosubject'}`
   const pendingManualStorageKey = `studiio_subject_plan_pending_manual_${user?.id || 'nouser'}_${activeSubjectId || 'nosubject'}`
@@ -139,11 +267,29 @@ export default function SubjectPlanMode({
     setLoading(true)
     supabase
       .from('learning_plan_tasks')
-      .select('id, type, title, description, scheduled_at, completed_at, material_id')
+      .select('id, type, title, description, scheduled_at, completed_at, material_id, external_url')
       .eq('user_id', user.id)
       .eq('subject_id', activeSubjectId)
       .order('scheduled_at', { ascending: true })
       .then(async ({ data, error }) => {
+        if (error && isMissingExternalUrlColumn(error)) {
+          const retry = await supabase
+            .from('learning_plan_tasks')
+            .select('id, type, title, description, scheduled_at, completed_at, material_id')
+            .eq('user_id', user.id)
+            .eq('subject_id', activeSubjectId)
+            .order('scheduled_at', { ascending: true })
+          if (!mounted) return
+          if (retry.error) {
+            console.error('Plan-Modus laden fehlgeschlagen:', retry.error)
+            setTasks([])
+            setLoading(false)
+            return
+          }
+          setTasks((retry.data || []).map((t) => ({ ...t, external_url: null })))
+          setLoading(false)
+          return
+        }
         if (error && isMissingDescriptionColumn(error)) {
           const retry = await supabase
             .from('learning_plan_tasks')
@@ -230,11 +376,27 @@ export default function SubjectPlanMode({
     setAllTasksLoading(true)
     supabase
       .from('learning_plan_tasks')
-      .select('id, type, title, scheduled_at, completed_at, subject_id')
+      .select('id, type, title, scheduled_at, completed_at, subject_id, external_url')
       .eq('user_id', user.id)
       .order('scheduled_at', { ascending: true })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!mounted) return
+        if (error && isMissingExternalUrlColumn(error)) {
+          const retry = await supabase
+            .from('learning_plan_tasks')
+            .select('id, type, title, scheduled_at, completed_at, subject_id')
+            .eq('user_id', user.id)
+            .order('scheduled_at', { ascending: true })
+          if (!mounted) return
+          if (retry.error) {
+            console.error('Alle Tasks laden fehlgeschlagen:', retry.error)
+            setAllTasks([])
+          } else {
+            setAllTasks((retry.data || []).map((t) => ({ ...t, external_url: null })))
+          }
+          setAllTasksLoading(false)
+          return
+        }
         if (error) {
           console.error('Alle Tasks laden fehlgeschlagen:', error)
           setAllTasks([])
@@ -255,8 +417,8 @@ export default function SubjectPlanMode({
     }
     Object.keys(grouped).forEach((key) => {
       grouped[key].sort((a, b) => {
-        const aDone = !!a.completed_at
-        const bDone = !!b.completed_at
+        const aDone = isLearningPlanTaskComplete(a)
+        const bDone = isLearningPlanTaskComplete(b)
         if (aDone !== bDone) return aDone ? 1 : -1
         return new Date(a.scheduled_at) - new Date(b.scheduled_at)
       })
@@ -278,42 +440,64 @@ export default function SubjectPlanMode({
     return grouped
   }, [allTasks])
 
+  const tasksByDayDisplay = useMemo(() => {
+    const todayKey = toLocalDateKey(new Date())
+    return enrichGroupedByDayWithOverdue(tasksByDay, todayKey)
+  }, [tasksByDay])
+
+  const allTasksByDayDisplay = useMemo(() => {
+    const todayKey = toLocalDateKey(new Date())
+    return enrichGroupedByDayWithOverdue(allTasksByDay, todayKey)
+  }, [allTasksByDay])
+
   async function createTaskOnDay({ type, title, description, materialId }, dateKey) {
+    setPlanModeError('')
     const scheduledAt = new Date(`${dateKey}T09:00:00`).toISOString()
-    const payload = {
+    let insertPayload = {
       user_id: user.id,
       subject_id: activeSubjectId,
       material_id: materialId || null,
       type,
       title,
       description,
+      external_url: null,
       scheduled_at: scheduledAt,
     }
-    let { data, error } = await supabase
-      .from('learning_plan_tasks')
-      .insert(payload)
-      .select('id, type, title, description, scheduled_at, completed_at, material_id')
-      .single()
+    let selectLine =
+      'id, type, title, description, external_url, scheduled_at, completed_at, material_id'
+
+    async function tryInsert(payload, sel) {
+      return supabase.from('learning_plan_tasks').insert(payload).select(sel).single()
+    }
+
+    let { data, error } = await tryInsert(insertPayload, selectLine)
+    if (error && isMissingExternalUrlColumn(error)) {
+      const { external_url: _e, ...noExt } = insertPayload
+      insertPayload = noExt
+      selectLine = 'id, type, title, description, scheduled_at, completed_at, material_id'
+      ;({ data, error } = await tryInsert(insertPayload, selectLine))
+      if (data) data = { ...data, external_url: null }
+    }
     if (error && isMissingDescriptionColumn(error)) {
-      const { description: _desc, ...payloadWithoutDescription } = payload
-      const retry = await supabase
-        .from('learning_plan_tasks')
-        .insert(payloadWithoutDescription)
-        .select('id, type, title, scheduled_at, completed_at, material_id')
-        .single()
-      data = retry.data ? { ...retry.data, description: null } : null
-      error = retry.error
+      const { description: _d, ...noDesc } = insertPayload
+      insertPayload = noDesc
+      selectLine = 'id, type, title, scheduled_at, completed_at, material_id'
+      ;({ data, error } = await tryInsert(insertPayload, selectLine))
+      if (data) data = { ...data, description: description ?? null, external_url: null }
     }
     if (error) {
       console.error('Plan-Modus: Aufgabe anlegen fehlgeschlagen:', error)
+      setPlanModeError('Aufgabe konnte nicht angelegt werden. Bitte später erneut versuchen.')
       return
     }
+    setPlanModeError('')
     setTasks((prev) => [...prev, data].sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at)))
   }
 
   async function moveTask(taskId, dateKey) {
     const task = tasks.find((t) => t.id === taskId)
     if (!task) return
+    setPlanModeError('')
     const oldDate = new Date(task.scheduled_at)
     const next = new Date(`${dateKey}T12:00:00`)
     next.setHours(oldDate.getHours(), oldDate.getMinutes(), 0, 0)
@@ -324,19 +508,19 @@ export default function SubjectPlanMode({
       .eq('user_id', user.id)
     if (error) {
       console.error('Plan-Modus: Verschieben fehlgeschlagen:', error)
+      setPlanModeError('Verschieben hat nicht geklappt. Bitte später erneut versuchen.')
       return
     }
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, scheduled_at: next.toISOString() } : t)))
   }
 
   async function removeTaskFromPlan(taskId) {
-    const { error } = await supabase
-      .from('learning_plan_tasks')
-      .delete()
-      .eq('id', taskId)
-      .eq('user_id', user.id)
+    if (!user?.id) return
+    setPlanModeError('')
+    const { error } = await deleteTask(user.id, taskId)
     if (error) {
       console.error('Plan-Modus: Entfernen fehlgeschlagen:', error)
+      setPlanModeError('Entfernen hat nicht geklappt. Bitte Verbindung prüfen und erneut versuchen.')
       return
     }
     setTasks((prev) => prev.filter((t) => t.id !== taskId))
@@ -359,6 +543,7 @@ export default function SubjectPlanMode({
     const currentDescription = String(task.description || '').trim()
     if (nextDescription === currentDescription) return
     setSavingCommentId(task.id)
+    setPlanModeError('')
     const { error } = await supabase
       .from('learning_plan_tasks')
       .update({ description: nextDescription || null })
@@ -367,8 +552,10 @@ export default function SubjectPlanMode({
     setSavingCommentId('')
     if (error) {
       console.error('Plan-Modus: Kommentar speichern fehlgeschlagen:', error)
+      setPlanModeError('Kommentar konnte nicht gespeichert werden.')
       return
     }
+    setPlanModeError('')
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, description: nextDescription || null } : t)))
   }
 
@@ -379,14 +566,22 @@ export default function SubjectPlanMode({
   function addPendingTutorItem() {
     const value = newTutorName.trim()
     if (!value) return
-    setPendingTutorItems((prev) => [...prev, { id: crypto.randomUUID(), name: value }])
+    const pendingId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `t-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setPendingTutorItems((prev) => [...prev, { id: pendingId, name: value }])
     setNewTutorName('')
   }
 
   function addPendingManualItem() {
     const value = newManualName.trim()
     if (!value) return
-    setPendingManualItems((prev) => [...prev, { id: crypto.randomUUID(), name: value }])
+    const pendingId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `m-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setPendingManualItems((prev) => [...prev, { id: pendingId, name: value }])
     setNewManualName('')
   }
 
@@ -435,13 +630,14 @@ export default function SubjectPlanMode({
     }
   }
 
-  const tutorCatalogItems = useMemo(() => {
+  const tutorCatalogGroups = useMemo(() => {
     const uploaded = materials.map((m) => ({
       id: `tutor_${m.id}`,
       type: 'tutor',
       materialId: m.id,
       title: `Tutor: ${m.filename}`,
       description: m.category ? `Kategorie: ${m.category}` : 'Tutor-Aufgabe für dieses Material',
+      catalogGroupKey: groupKeyFromMaterialCategoryValue(m.category),
     }))
     const pending = pendingTutorItems.map((item) => ({
       id: `pending_tutor_${item.id}`,
@@ -450,8 +646,20 @@ export default function SubjectPlanMode({
       title: `Tutor: ${item.name}`,
       description: 'Platzhalter-Datei (noch nicht hochgeladen)',
       pendingTutorId: item.id,
+      catalogGroupKey: '__pending__',
     }))
-    return [...uploaded, ...pending]
+
+    const bucket = new Map()
+    for (const it of [...uploaded, ...pending]) {
+      const k = it.catalogGroupKey
+      if (!bucket.has(k)) bucket.set(k, [])
+      bucket.get(k).push(it)
+    }
+
+    const out = orderedMaterialCategoryGroups(bucket)
+    const pend = bucket.get('__pending__')
+    if (pend?.length) out.push({ key: 'pending', label: 'Noch nicht hochgeladen', items: pend })
+    return out
   }, [materials, pendingTutorItems])
 
   const plannedKeySet = useMemo(() => {
@@ -488,41 +696,60 @@ export default function SubjectPlanMode({
     return [...defaults, ...freeNamed]
   }, [pendingManualItems])
 
-  const vocabCreateCatalogItems = useMemo(() => {
-    const byMaterial = materials
-      .filter((m) => canCreateVocabForMaterial(m))
-      .map((m) => ({
+  const vocabCreateCatalogGroups = useMemo(() => {
+    const filtered = materials.filter((m) => canCreateVocabForMaterial(m))
+    if (filtered.length === 0) {
+      return [
+        {
+          key: 'generic',
+          label: 'Allgemein',
+          items: [
+            {
+              id: 'vocab_create_generic',
+              type: 'manual',
+              materialId: null,
+              title: 'Vokabeln erstellen',
+              description: 'Neue Vokabeln erstellen',
+            },
+          ],
+        },
+      ]
+    }
+    const uploaded = filtered.map((m) => ({
       id: `vocab_create_${m.id}`,
       type: 'manual',
       materialId: m.id,
       title: `Vokabeln erstellen: ${m.filename}`,
       description: m.category ? `Datei (${m.category})` : 'Datei',
+      catalogGroupKey: groupKeyFromMaterialCategoryValue(m.category),
     }))
-    if (byMaterial.length > 0) return byMaterial
-    return [
-      {
-        id: 'vocab_create_generic',
-        type: 'manual',
-        materialId: null,
-        title: 'Vokabeln erstellen',
-        description: 'Neue Vokabeln erstellen',
-      },
-    ]
+    const bucket = new Map()
+    for (const it of uploaded) {
+      const k = it.catalogGroupKey
+      if (!bucket.has(k)) bucket.set(k, [])
+      bucket.get(k).push(it)
+    }
+    return orderedMaterialCategoryGroups(bucket)
   }, [materials])
+
+  const vocabPracticeCatalogItem = {
+    id: 'vocab_practice',
+    type: 'vocab',
+    materialId: null,
+    title: 'Vokabeln lernen',
+    description: 'Vokabeln aktiv wiederholen',
+  }
 
   const catalogSections = [
     {
       key: 'tutor',
       title: 'Tutor-Modus',
-      items: tutorCatalogItems,
+      items: [],
     },
     {
       key: 'vocab',
       title: 'Vokabeln',
-      items: [
-        ...vocabCreateCatalogItems,
-        { id: 'vocab_practice', type: 'vocab', materialId: null, title: 'Vokabeln lernen', description: 'Vokabeln aktiv wiederholen' },
-      ],
+      items: [],
     },
     {
       key: 'exam',
@@ -539,9 +766,17 @@ export default function SubjectPlanMode({
   ]
 
   return (
-    <section className="space-y-4">
+    <section
+      className={
+        showCatalog
+          ? fillParent
+            ? 'flex h-full min-h-0 flex-col gap-4 overflow-hidden'
+            : 'flex h-[calc(100dvh-10rem)] min-h-0 flex-col gap-4 overflow-hidden max-md:h-[calc(100dvh-7rem)]'
+          : 'space-y-4'
+      }
+    >
       {showHeader && (
-        <div className="flex items-center justify-between gap-3">
+        <div className={`flex items-center justify-between gap-3 ${showCatalog ? 'shrink-0' : ''}`}>
           <button type="button" onClick={onBack} className="inline-flex items-center gap-1 text-sm text-studiio-accent hover:underline">
             <span className="inline-block rotate-180 text-base">➜</span>
             Zurück zum Fach
@@ -549,27 +784,43 @@ export default function SubjectPlanMode({
           <h3 className="text-base font-semibold text-studiio-ink">Plan-Modus · {activeSubject?.name || subject?.name}</h3>
         </div>
       )}
+      {planModeError ? (
+        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {planModeError}
+        </p>
+      ) : null}
 
-      <div className={showCatalog ? 'grid gap-4 md:grid-cols-[320px_minmax(0,1fr)]' : ''}>
+      <div
+        className={
+          showCatalog
+            ? 'grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden md:grid-cols-[320px_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]'
+            : 'min-w-0'
+        }
+      >
         {showCatalog && (
-        <aside className="h-fit rounded-2xl border border-studiio-lavender/50 bg-white/90 p-4 md:sticky md:top-4">
-          {allowSubjectSelection && (
-            <div className="mb-3">
-              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-studiio-muted">Fach auswählen</label>
-              <select
-                value={activeSubjectId}
-                onChange={(e) => setActiveSubjectId(e.target.value)}
-                className="studiio-input w-full"
-              >
-                {availableSubjects.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
+        <aside className="flex min-h-0 h-full max-h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-studiio-lavender/50 bg-white/90 p-4 max-h-[min(44vh,22rem)] md:max-h-full">
+          <div className="shrink-0 space-y-3">
+            {allowSubjectSelection && (
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-studiio-muted">Fach auswählen</label>
+                <select
+                  value={activeSubjectId}
+                  onChange={(e) => setActiveSubjectId(e.target.value)}
+                  className="studiio-input w-full"
+                >
+                  {availableSubjects.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div>
+              <h4 className="text-sm font-semibold text-studiio-ink">Aufgaben-Katalog</h4>
+              <p className="mt-1 text-xs text-studiio-muted">Überthema aufklappen und Eintrag auf einen Tag ziehen.</p>
             </div>
-          )}
-          <h4 className="text-sm font-semibold text-studiio-ink">Aufgaben-Katalog</h4>
-          <p className="mt-1 text-xs text-studiio-muted">Überthema aufklappen und Eintrag auf einen Tag ziehen.</p>
-          <div className="mt-3 space-y-2">
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pr-1 pt-3 [scrollbar-gutter:stable]">
+            <div className="space-y-2">
             {catalogSections.map((section) => (
               <div key={section.key} className="rounded-lg border border-studiio-lavender/40 bg-white">
                 <button
@@ -583,13 +834,13 @@ export default function SubjectPlanMode({
                 {expandedSections[section.key] && (
                   <div className="border-t border-studiio-lavender/20 px-2 pb-2 pt-2">
                     {section.key === 'tutor' && (
-                      <div className="mb-2 flex items-center gap-2">
+                      <div className="mb-2 flex min-w-0 items-center gap-2">
                         <input
                           type="text"
                           value={newTutorName}
                           onChange={(e) => setNewTutorName(e.target.value)}
                           placeholder="Noch nicht hochgeladene Vorlesung benennen"
-                          className="studiio-input w-full text-xs"
+                          className="studiio-input min-w-0 flex-1 text-xs"
                         />
                         <button
                           type="button"
@@ -601,13 +852,13 @@ export default function SubjectPlanMode({
                       </div>
                     )}
                     {section.key === 'manual' && (
-                      <div className="mb-2 flex items-center gap-2">
+                      <div className="mb-2 flex min-w-0 items-center gap-2">
                         <input
                           type="text"
                           value={newManualName}
                           onChange={(e) => setNewManualName(e.target.value)}
                           placeholder="Frei benennbare Aufgabe"
-                          className="studiio-input w-full text-xs"
+                          className="studiio-input min-w-0 flex-1 text-xs"
                         />
                         <button
                           type="button"
@@ -618,87 +869,330 @@ export default function SubjectPlanMode({
                         </button>
                       </div>
                     )}
-                    <ul className="space-y-2">
-                    {section.items.map((item) => (
-                      <li
-                        key={item.id}
-                        draggable={interactive}
-                        onDragStart={(e) => handleCatalogDragStart(e, {
-                          type: item.type,
-                          title: item.title,
-                          description: item.description,
-                          materialId: item.materialId || null,
-                        })}
-                        className={`cursor-grab rounded-md border px-2 py-1.5 active:cursor-grabbing ${
-                          isAlreadyPlanned(item)
-                            ? 'border-emerald-300 bg-emerald-50/70'
-                            : 'border-studiio-lavender/40 bg-studiio-sky/10'
-                        }`}
-                      >
-                        {item.pendingTutorId ? (
-                          <div className="mb-1 flex items-center gap-1">
-                            <input
-                              type="text"
-                              value={item.title.replace(/^Tutor:\s*/, '')}
-                              onChange={(e) => renamePendingTutorItem(item.pendingTutorId, e.target.value)}
-                              className="studiio-input w-full text-xs"
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                removePendingTutorItem(item.pendingTutorId)
-                              }}
-                              className="rounded border border-studiio-lavender/70 px-2 py-1 text-[11px] text-studiio-muted hover:bg-white"
-                            >
-                              ×
-                            </button>
+                    {section.key === 'tutor' ? (
+                      tutorCatalogGroups.length === 0 ? (
+                        <p className="rounded-md bg-studiio-sky/10 px-2 py-1 text-[11px] text-studiio-muted">
+                          Hier sind noch keine Einträge vorhanden.
+                        </p>
+                      ) : (
+                        <div className="min-w-0 space-y-3">
+                          {tutorCatalogGroups.map((grp) => (
+                            <div key={grp.key} className="min-w-0">
+                              <p className="mb-1.5 border-b border-studiio-lavender/30 pb-1 text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                                {grp.label}
+                                <span className="ml-1 font-normal normal-case text-studiio-muted">
+                                  ({grp.items.length})
+                                </span>
+                              </p>
+                              <ul className="min-w-0 space-y-2">
+                                {grp.items.map((item) => (
+                                  <li
+                                    key={item.id}
+                                    draggable={interactive}
+                                    onDragStart={(e) => handleCatalogDragStart(e, {
+                                      type: item.type,
+                                      title: item.title,
+                                      description: item.description,
+                                      materialId: item.materialId || null,
+                                    })}
+                                    className={`min-w-0 max-w-full cursor-grab rounded-md border px-2 py-1.5 active:cursor-grabbing ${
+                                      isAlreadyPlanned(item)
+                                        ? 'border-emerald-300 bg-emerald-50/70'
+                                        : 'border-studiio-lavender/40 bg-studiio-sky/10'
+                                    }`}
+                                  >
+                                    {item.pendingTutorId ? (
+                                      <div className="mb-1 flex min-w-0 items-center gap-1">
+                                        <input
+                                          type="text"
+                                          value={item.title.replace(/^Tutor:\s*/, '')}
+                                          onChange={(e) => renamePendingTutorItem(item.pendingTutorId, e.target.value)}
+                                          className="studiio-input min-w-0 flex-1 text-xs"
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            removePendingTutorItem(item.pendingTutorId)
+                                          }}
+                                          className="rounded border border-studiio-lavender/70 px-2 py-1 text-[11px] text-studiio-muted hover:bg-white"
+                                        >
+                                          ×
+                                        </button>
+                                      </div>
+                                    ) : (() => {
+                                      const parts = splitCatalogTitle(item.title)
+                                      if (parts.label) {
+                                        return (
+                                          <div className="min-w-0 space-y-0.5">
+                                            <p className="text-xs font-medium text-studiio-ink">
+                                              {isAlreadyPlanned(item) ? (
+                                                <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                              ) : null}
+                                              <span className="text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                                                {parts.label}
+                                              </span>
+                                            </p>
+                                            <p className="break-all text-xs font-medium leading-snug text-studiio-ink">
+                                              {parts.body}
+                                            </p>
+                                          </div>
+                                        )
+                                      }
+                                      return (
+                                        <p className="min-w-0 break-words text-xs font-medium text-studiio-ink">
+                                          {isAlreadyPlanned(item) ? (
+                                            <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                          ) : null}
+                                          {parts.body}
+                                        </p>
+                                      )
+                                    })()}
+                                    <p className="min-w-0 break-words text-[11px] text-studiio-muted">
+                                      {decodeHtmlEntities(item.description || '')}
+                                    </p>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    ) : section.key === 'vocab' ? (
+                      <div className="min-w-0 space-y-3">
+                        {vocabCreateCatalogGroups.map((grp) => (
+                          <div key={grp.key} className="min-w-0">
+                            <p className="mb-1.5 border-b border-studiio-lavender/30 pb-1 text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                              {grp.label}
+                              <span className="ml-1 font-normal normal-case text-studiio-muted">
+                                ({grp.items.length})
+                              </span>
+                            </p>
+                            <ul className="min-w-0 space-y-2">
+                              {grp.items.map((item) => (
+                                <li
+                                  key={item.id}
+                                  draggable={interactive}
+                                  onDragStart={(e) => handleCatalogDragStart(e, {
+                                    type: item.type,
+                                    title: item.title,
+                                    description: item.description,
+                                    materialId: item.materialId || null,
+                                  })}
+                                  className={`min-w-0 max-w-full cursor-grab rounded-md border px-2 py-1.5 active:cursor-grabbing ${
+                                    isAlreadyPlanned(item)
+                                      ? 'border-emerald-300 bg-emerald-50/70'
+                                      : 'border-studiio-lavender/40 bg-studiio-sky/10'
+                                  }`}
+                                >
+                                  {(() => {
+                                    const parts = splitCatalogTitle(item.title)
+                                    if (parts.label) {
+                                      return (
+                                        <div className="min-w-0 space-y-0.5">
+                                          <p className="text-xs font-medium text-studiio-ink">
+                                            {isAlreadyPlanned(item) ? (
+                                              <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                            ) : null}
+                                            <span className="text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                                              {parts.label}
+                                            </span>
+                                          </p>
+                                          <p className="break-all text-xs font-medium leading-snug text-studiio-ink">
+                                            {parts.body}
+                                          </p>
+                                        </div>
+                                      )
+                                    }
+                                    return (
+                                      <p className="min-w-0 break-words text-xs font-medium text-studiio-ink">
+                                        {isAlreadyPlanned(item) ? (
+                                          <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                        ) : null}
+                                        {parts.body}
+                                      </p>
+                                    )
+                                  })()}
+                                  <p className="min-w-0 break-words text-[11px] text-studiio-muted">
+                                    {decodeHtmlEntities(item.description || '')}
+                                  </p>
+                                </li>
+                              ))}
+                            </ul>
                           </div>
-                        ) : item.pendingManualId ? (
-                          <div className="mb-1 flex items-center gap-1">
-                            <input
-                              type="text"
-                              value={item.title}
-                              onChange={(e) => renamePendingManualItem(item.pendingManualId, e.target.value)}
-                              className="studiio-input w-full text-xs"
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                removePendingManualItem(item.pendingManualId)
-                              }}
-                              className="rounded border border-studiio-lavender/70 px-2 py-1 text-[11px] text-studiio-muted hover:bg-white"
+                        ))}
+                        <div className="min-w-0 border-t border-studiio-lavender/20 pt-2">
+                          <p className="mb-1.5 border-b border-studiio-lavender/30 pb-1 text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                            Gesamt
+                          </p>
+                          <ul className="min-w-0 space-y-2">
+                            <li
+                              key={vocabPracticeCatalogItem.id}
+                              draggable={interactive}
+                              onDragStart={(e) => handleCatalogDragStart(e, {
+                                type: vocabPracticeCatalogItem.type,
+                                title: vocabPracticeCatalogItem.title,
+                                description: vocabPracticeCatalogItem.description,
+                                materialId: vocabPracticeCatalogItem.materialId || null,
+                              })}
+                              className={`min-w-0 max-w-full cursor-grab rounded-md border px-2 py-1.5 active:cursor-grabbing ${
+                                isAlreadyPlanned(vocabPracticeCatalogItem)
+                                  ? 'border-emerald-300 bg-emerald-50/70'
+                                  : 'border-studiio-lavender/40 bg-studiio-sky/10'
+                              }`}
                             >
-                              ×
-                            </button>
-                          </div>
-                        ) : (
-                          <p className="text-xs font-medium text-studiio-ink">
-                            {isAlreadyPlanned(item) ? '✓ ' : ''}
-                            {item.title}
+                              {(() => {
+                                const parts = splitCatalogTitle(vocabPracticeCatalogItem.title)
+                                if (parts.label) {
+                                  return (
+                                    <div className="min-w-0 space-y-0.5">
+                                      <p className="text-xs font-medium text-studiio-ink">
+                                        {isAlreadyPlanned(vocabPracticeCatalogItem) ? (
+                                          <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                        ) : null}
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                                          {parts.label}
+                                        </span>
+                                      </p>
+                                      <p className="break-all text-xs font-medium leading-snug text-studiio-ink">
+                                        {parts.body}
+                                      </p>
+                                    </div>
+                                  )
+                                }
+                                return (
+                                  <p className="min-w-0 break-words text-xs font-medium text-studiio-ink">
+                                    {isAlreadyPlanned(vocabPracticeCatalogItem) ? (
+                                      <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                    ) : null}
+                                    {parts.body}
+                                  </p>
+                                )
+                              })()}
+                              <p className="min-w-0 break-words text-[11px] text-studiio-muted">
+                                {decodeHtmlEntities(vocabPracticeCatalogItem.description || '')}
+                              </p>
+                            </li>
+                          </ul>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <ul className="min-w-0 space-y-2">
+                          {section.items.map((item) => (
+                            <li
+                              key={item.id}
+                              draggable={interactive}
+                              onDragStart={(e) => handleCatalogDragStart(e, {
+                                type: item.type,
+                                title: item.title,
+                                description: item.description,
+                                materialId: item.materialId || null,
+                              })}
+                              className={`min-w-0 max-w-full cursor-grab rounded-md border px-2 py-1.5 active:cursor-grabbing ${
+                                isAlreadyPlanned(item)
+                                  ? 'border-emerald-300 bg-emerald-50/70'
+                                  : 'border-studiio-lavender/40 bg-studiio-sky/10'
+                              }`}
+                            >
+                              {item.pendingTutorId ? (
+                                <div className="mb-1 flex min-w-0 items-center gap-1">
+                                  <input
+                                    type="text"
+                                    value={item.title.replace(/^Tutor:\s*/, '')}
+                                    onChange={(e) => renamePendingTutorItem(item.pendingTutorId, e.target.value)}
+                                    className="studiio-input min-w-0 flex-1 text-xs"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      removePendingTutorItem(item.pendingTutorId)
+                                    }}
+                                    className="rounded border border-studiio-lavender/70 px-2 py-1 text-[11px] text-studiio-muted hover:bg-white"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ) : item.pendingManualId ? (
+                                <div className="mb-1 flex min-w-0 items-center gap-1">
+                                  <input
+                                    type="text"
+                                    value={item.title}
+                                    onChange={(e) => renamePendingManualItem(item.pendingManualId, e.target.value)}
+                                    className="studiio-input min-w-0 flex-1 text-xs"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      removePendingManualItem(item.pendingManualId)
+                                    }}
+                                    className="rounded border border-studiio-lavender/70 px-2 py-1 text-[11px] text-studiio-muted hover:bg-white"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ) : (() => {
+                                const parts = splitCatalogTitle(item.title)
+                                if (parts.label) {
+                                  return (
+                                    <div className="min-w-0 space-y-0.5">
+                                      <p className="text-xs font-medium text-studiio-ink">
+                                        {isAlreadyPlanned(item) ? (
+                                          <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                        ) : null}
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-studiio-muted">
+                                          {parts.label}
+                                        </span>
+                                      </p>
+                                      <p className="break-all text-xs font-medium leading-snug text-studiio-ink">
+                                        {parts.body}
+                                      </p>
+                                    </div>
+                                  )
+                                }
+                                return (
+                                  <p className="min-w-0 break-words text-xs font-medium text-studiio-ink">
+                                    {isAlreadyPlanned(item) ? (
+                                      <span className="mr-0.5 text-emerald-700" aria-hidden>✓</span>
+                                    ) : null}
+                                    {parts.body}
+                                  </p>
+                                )
+                              })()}
+                              <p className="min-w-0 break-words text-[11px] text-studiio-muted">
+                                {decodeHtmlEntities(item.description || '')}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                        {section.items.length === 0 && (
+                          <p className="rounded-md bg-studiio-sky/10 px-2 py-1 text-[11px] text-studiio-muted">
+                            Hier sind noch keine Einträge vorhanden.
                           </p>
                         )}
-                        <p className="text-[11px] text-studiio-muted">{item.description}</p>
-                      </li>
-                    ))}
-                    </ul>
-                    {section.items.length === 0 && (
-                      <p className="rounded-md bg-studiio-sky/10 px-2 py-1 text-[11px] text-studiio-muted">
-                        Hier sind noch keine Einträge vorhanden.
-                      </p>
+                      </>
                     )}
                   </div>
                 )}
               </div>
             ))}
+            </div>
           </div>
         </aside>
         )}
 
-        <div className="rounded-2xl border border-studiio-lavender/50 bg-white/90 p-4">
+        <div
+          className={`min-h-0 min-w-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-studiio-lavender/50 bg-white/90 p-4 pr-3 ${
+            showCatalog
+              ? 'h-full max-h-full overscroll-contain [scrollbar-gutter:stable]'
+              : ''
+          }`}
+        >
           {showCatalog && (
             <div className="mb-2 flex justify-end">
               <button
@@ -713,7 +1207,7 @@ export default function SubjectPlanMode({
           <h4 className="text-sm font-semibold text-studiio-ink">
             {showAllTasks
               ? 'Alle geplanten Aufgaben'
-              : `Tage bis zur Klausur ${activeSubject?.exam_date ? `(bis ${new Date(activeSubject.exam_date).toLocaleDateString('de-DE')})` : '(nächste 30 Tage)'}`}
+              : `Ab heute bis zur Klausur ${activeSubject?.exam_date ? `(bis ${new Date(activeSubject.exam_date).toLocaleDateString('de-DE')})` : '(nächste 30 Tage)'}`}
           </h4>
           {loading ? (
             <p className="mt-3 text-sm text-studiio-muted">Plan wird geladen …</p>
@@ -728,15 +1222,15 @@ export default function SubjectPlanMode({
                       <p className="text-xs font-semibold text-studiio-ink">{formatDay(dayKey)}</p>
                     </div>
                     <ul className="space-y-1">
-                      {(allTasksByDay[dayKey] || []).map((task) => {
+                      {(allTasksByDayDisplay[dayKey] || []).map((task) => {
                         const subName = availableSubjects.find((s) => s.id === task.subject_id)?.name || 'Fach'
                         return (
                           <li
                             key={task.id}
-                            className={`rounded-md border px-2 py-1 text-xs ${task.completed_at ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-studiio-lavender/40 bg-white text-studiio-ink'}`}
+                            className={`min-w-0 max-w-full rounded-md border px-2 py-1 text-xs ${isLearningPlanTaskComplete(task) ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-studiio-lavender/40 bg-white text-studiio-ink'}`}
                           >
-                            <p className="font-medium break-words">{task.title}</p>
-                            <p className="text-[11px] text-studiio-muted">{subName}</p>
+                            {renderPlanTaskTitle(task.title)}
+                            <p className="mt-0.5 min-w-0 break-words text-[11px] text-studiio-muted">{subName}</p>
                           </li>
                         )
                       })}
@@ -764,7 +1258,7 @@ export default function SubjectPlanMode({
                     <p className="text-xs font-semibold text-studiio-ink">{formatDay(dayKey)}</p>
                   </div>
                   <ul className="space-y-1">
-                    {(tasksByDay[dayKey] || []).map((task) => (
+                    {(tasksByDayDisplay[dayKey] || []).map((task) => (
                       <li
                         key={task.id}
                         draggable={interactive}
@@ -779,11 +1273,11 @@ export default function SubjectPlanMode({
                           }
                           if (onTaskClick) onTaskClick(task)
                         }}
-                        className={`rounded-md border px-2 py-1 text-xs ${task.completed_at ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-studiio-lavender/40 bg-white text-studiio-ink'} ${interactive ? 'cursor-grab' : onTaskClick ? 'cursor-pointer hover:bg-studiio-sky/20' : 'cursor-default'}`}
+                        className={`min-w-0 max-w-full rounded-md border px-2 py-1 text-xs ${isLearningPlanTaskComplete(task) ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-studiio-lavender/40 bg-white text-studiio-ink'} ${interactive ? 'cursor-grab' : onTaskClick ? 'cursor-pointer hover:bg-studiio-sky/20' : 'cursor-default'}`}
                       >
-                        <div className="space-y-1">
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="break-words font-medium">{task.title}</p>
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex min-w-0 items-start justify-between gap-2">
+                            {renderPlanTaskTitle(task.title)}
                           </div>
                           {interactive && activeTaskId === task.id && (
                             <div className="space-y-1 border-t border-studiio-lavender/20 pt-1">

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient'
+import { completeVocabTasksForSubjectToday } from '../utils/learningPlan'
 import { FORMAT_LABELS } from './FlashcardCreateModal'
 import ReactMarkdown from 'react-markdown'
 
@@ -36,7 +37,7 @@ function nextInterval(currentIntervalDays, qualityInput) {
   return { interval_days: nextStep, next_review_at: next.toISOString() }
 }
 
-export default function FlashcardPractice({ user, cards, onBack, onEditCard, onCardChange }) {
+export default function FlashcardPractice({ user, cards, onBack, onEditCard, onCardChange, learningPlanSubjectId = null }) {
   const [sessionCards, setSessionCards] = useState(cards || [])
   const [index, setIndex] = useState(0)
   const [showAnswer, setShowAnswer] = useState(false)
@@ -59,6 +60,7 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
     setSessionCards(cards || [])
     setIndex(0)
     setFinished(false)
+    vocabPlanSyncedRef.current = false
   }, [cards])
 
   const card = sessionCards[index]
@@ -122,16 +124,28 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
     if (!user?.id) return
     const quality = normalizeReviewQuality(qualityInput, 'good')
     const correct = quality !== 'again'
-    await supabase.from('flashcard_reviews').insert({
+    const { error: insertErr } = await supabase.from('flashcard_reviews').insert({
       user_id: user.id,
       flashcard_id: flashcardId,
       correct,
     })
+    if (insertErr) {
+      console.error('flashcard_reviews:', insertErr)
+      return
+    }
     const { interval_days, next_review_at } = nextInterval(currentIntervalDays, quality)
-    await supabase
+    const { error: updateErr } = await supabase
       .from('flashcards')
       .update({ interval_days, next_review_at })
       .eq('id', flashcardId)
+    if (updateErr) {
+      console.error('flashcards update:', updateErr)
+      return
+    }
+    if (learningPlanSubjectId && !vocabPlanSyncedRef.current) {
+      vocabPlanSyncedRef.current = true
+      await completeVocabTasksForSubjectToday(user.id, learningPlanSubjectId)
+    }
   }
 
   async function evaluateOpenAnswer() {

@@ -11,57 +11,93 @@ function isMissingDescriptionColumn(error) {
   return code === '42703' || (msg.includes('description') && msg.includes('column'))
 }
 
+function isMissingExternalUrlColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('external_url') && msg.includes('column'))
+}
+
 /** Task als erledigt markieren */
 export async function completeTask(userId, taskId) {
-  if (!userId || !taskId) return
-  await supabase
+  if (!userId || !taskId) return { error: null }
+  const { error } = await supabase
     .from(TABLE)
     .update({ completed_at: new Date().toISOString() })
     .eq('id', taskId)
     .eq('user_id', userId)
+  return { error }
+}
+
+/** Task dauerhaft aus dem Lernplan entfernen */
+export async function deleteTask(userId, taskId) {
+  if (!userId || !taskId) return { error: new Error('userId und taskId nötig') }
+  const { error } = await supabase.from(TABLE).delete().eq('id', taskId).eq('user_id', userId)
+  if (error) return { error }
+  return { error: null }
 }
 
 /** Task wieder auf „nicht erledigt“ setzen (Kreuz entfernen) */
 export async function uncompleteTask(userId, taskId) {
-  if (!userId || !taskId) return
-  await supabase
+  if (!userId || !taskId) return { error: null }
+  const { error } = await supabase
     .from(TABLE)
     .update({ completed_at: null })
     .eq('id', taskId)
     .eq('user_id', userId)
+  return { error }
 }
 
-/** Task bearbeiten (Typ, Fach, Material, Titel, Beschreibung, Datum/Uhrzeit) */
+/** Task bearbeiten (Typ, Fach, Material, Titel, Beschreibung, optionaler Link, Datum/Uhrzeit) */
 export async function updateTask(userId, taskId, payload) {
   if (!userId || !taskId) return { error: new Error('userId und taskId nötig') }
-  const baseUpdate = {
+
+  const core = {
     type: payload.type,
     subject_id: payload.subject_id || null,
     material_id: payload.material_id ?? null,
     title: payload.title,
-    description: payload.description ?? null,
     scheduled_at: payload.scheduled_at,
   }
-  let { data, error } = await supabase
-    .from(TABLE)
-    .update(baseUpdate)
-    .eq('id', taskId)
-    .eq('user_id', userId)
-    .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
-    .single()
 
-  // Fallback für ältere DBs ohne "description"-Spalte.
+  async function doUpdate(updateObj, selectLine) {
+    return supabase.from(TABLE).update(updateObj).eq('id', taskId).eq('user_id', userId).select(selectLine).single()
+  }
+
+  let updateObj = {
+    ...core,
+    description: payload.description ?? null,
+    external_url: payload.external_url ?? null,
+  }
+  let selectLine =
+    'id, type, subject_id, material_id, title, description, external_url, scheduled_at, completed_at'
+
+  let { data, error } = await doUpdate(updateObj, selectLine)
+
+  if (error && isMissingExternalUrlColumn(error)) {
+    const { external_url: _e, ...noExt } = updateObj
+    const r = await doUpdate(
+      noExt,
+      'id, type, subject_id, material_id, title, description, scheduled_at, completed_at',
+    )
+    data = r.data ? { ...r.data, external_url: payload.external_url ?? null } : null
+    error = r.error
+    updateObj = noExt
+  }
+
   if (error && isMissingDescriptionColumn(error)) {
-    const { description, ...withoutDescription } = baseUpdate
-    const retry = await supabase
-      .from(TABLE)
-      .update(withoutDescription)
-      .eq('id', taskId)
-      .eq('user_id', userId)
-      .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
-      .single()
-    data = retry.data ? { ...retry.data, description: payload.description ?? null } : null
-    error = retry.error
+    const { description: _d, ...noDesc } = updateObj
+    const r = await doUpdate(
+      noDesc,
+      'id, type, subject_id, material_id, title, scheduled_at, completed_at',
+    )
+    data = r.data
+      ? {
+          ...r.data,
+          description: payload.description ?? null,
+          external_url: payload.external_url ?? null,
+        }
+      : null
+    error = r.error
   }
 
   if (error) return { error, data: null }

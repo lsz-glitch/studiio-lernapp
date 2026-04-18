@@ -1,7 +1,18 @@
-import React, { Suspense, lazy, useState, useEffect } from 'react'
+import React, { Suspense, lazy, useState, useEffect, useRef } from 'react'
 import { supabase } from './supabaseClient'
+import { WELCOME_START_DELAY_MS, WELCOME_REMIND_SNOOZE_MS } from './config'
+import {
+  armMiniFocusSession,
+  pauseMiniFocusSession,
+  clearMiniFocusSession,
+} from './utils/miniFocusSession'
+import { clearPomodoroFocusStorage, dispatchPomodoroPauseForLeave } from './utils/pomodoroFocusBridge'
+import { confirmFocusLeaveIfNeeded } from './utils/focusLeaveConfirm'
+import { completeTask } from './utils/learningPlan'
+import { openLearningPlanExternalUrlSafely } from './utils/safeExternalUrl'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
+import PomodoroTimer from './components/PomodoroTimer'
 import './App.css'
 
 const SettingsClaudeKey = lazy(() => import('./components/SettingsClaudeKey'))
@@ -71,6 +82,54 @@ function getTaskTypeBadgeClass(type) {
   return 'border-studiio-lavender/60 bg-white text-studiio-muted'
 }
 
+function getWelcomeTaskLabel(task, subjects) {
+  const sub = task?.subject_id ? subjects.find((s) => s.id === task.subject_id) : null
+  const t = task?.title?.trim()
+  if (t) return t
+  return `${getTaskTypeLabel(task?.type || 'manual')}${sub ? `: ${sub.name}` : ''}`
+}
+
+function formatMmSsFromMs(ms) {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000))
+  const mm = Math.floor(totalSec / 60)
+  const ss = totalSec % 60
+  return `${mm}:${String(ss).padStart(2, '0')}`
+}
+
+function taskScheduledOnOrBeforeToday(task, todayKey) {
+  if (!task?.scheduled_at) return false
+  const d = new Date(task.scheduled_at)
+  if (Number.isNaN(d.getTime())) return false
+  const key = toLocalDateKey(d)
+  return key <= todayKey
+}
+
+function isMissingExternalUrlColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('external_url') && msg.includes('column'))
+}
+
+const WELCOME_SNOOZE_KEY = 'studiio_welcome_flow_snooze_until'
+
+function getWelcomeSnoozeUntil() {
+  try {
+    const v = localStorage.getItem(WELCOME_SNOOZE_KEY)
+    const t = v ? parseInt(v, 10) : 0
+    return Number.isFinite(t) && t > Date.now() ? t : 0
+  } catch (_) {
+    return 0
+  }
+}
+
+function isWelcomeMutedToday() {
+  try {
+    return localStorage.getItem(`studiio_welcome_flow_mute_${toLocalDateKey()}`) === '1'
+  } catch (_) {
+    return false
+  }
+}
+
 function App() {
   const [user, setUser] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -81,6 +140,21 @@ function App() {
   const [openToPractice, setOpenToPractice] = useState(false)
   const [openToTutorMaterialId, setOpenToTutorMaterialId] = useState(null)
   const [todayPlannedTasks, setTodayPlannedTasks] = useState(0)
+  /** Nach Carryover-Check (oder Skip) true — damit der Start-Dialog nicht davor aufpoppt. */
+  const [planPickReady, setPlanPickReady] = useState(false)
+  const [welcomeStartOpen, setWelcomeStartOpen] = useState(false)
+  const [welcomeStartTasks, setWelcomeStartTasks] = useState([])
+  const [welcomeStartSubjects, setWelcomeStartSubjects] = useState([])
+  /** Zuerst offenen Tutor fortsetzen? Sonst direkt Aufgabenwahl. */
+  const [welcomeFlowStep, setWelcomeFlowStep] = useState('pick')
+  const [welcomeResumeHint, setWelcomeResumeHint] = useState(null)
+  /** Nach Tab-Fokus: Snooze abgelaufen? → Start-Hinweis erneut prüfen. */
+  const [welcomeFocusNonce, setWelcomeFocusNonce] = useState(0)
+  const [welcomePendingNav, setWelcomePendingNav] = useState(null)
+  const welcomeNavigateTimeoutRef = useRef(null)
+  const [, setWelcomeTick] = useState(0)
+  /** Nach Wiederherstellung von Tab/Fach aus localStorage — Start-Dialog erst danach. */
+  const [sessionRestoreDone, setSessionRestoreDone] = useState(false)
   const [carryoverModal, setCarryoverModal] = useState({
     open: false,
     mode: 'yesterday', // yesterday | all_open
@@ -88,6 +162,10 @@ function App() {
     selectedIds: [],
     loading: false,
   })
+  /** Nach Start aus dem Willkommens-Flow: manuelle/Klausur-Aufgaben — „Zeit für …“ + Erledigt / weiter. */
+  const [welcomeTaskFollowup, setWelcomeTaskFollowup] = useState(null)
+  const [welcomeFollowupSaving, setWelcomeFollowupSaving] = useState(false)
+  const [welcomeFollowupError, setWelcomeFollowupError] = useState('')
 
   useEffect(() => {
     if (!supabase) {
@@ -106,7 +184,11 @@ function App() {
 
   // Letzte Ansicht/Fach nach Login wiederherstellen
   useEffect(() => {
-    if (!user || authLoading) return
+    if (!user || authLoading) {
+      setSessionRestoreDone(false)
+      return
+    }
+    let cancelled = false
 
     const restore = async () => {
       try {
@@ -121,7 +203,6 @@ function App() {
           setActiveView('overview')
         }
 
-        // 1. Versuch: komplettes Fach-Objekt aus localStorage verwenden
         if (storedSubjectRaw) {
           try {
             restoredSubject = JSON.parse(storedSubjectRaw)
@@ -134,7 +215,6 @@ function App() {
           }
         }
 
-        // 2. Fallback: Fach aus Supabase nachladen, falls nur die ID gespeichert ist
         if (!restoredSubject && storedSubjectId) {
           const { data, error } = await supabase
             .from('subjects')
@@ -148,10 +228,15 @@ function App() {
         }
       } catch (e) {
         console.error('Fehler beim Wiederherstellen der letzten Ansicht:', e)
+      } finally {
+        if (!cancelled) setSessionRestoreDone(true)
       }
     }
 
     restore()
+    return () => {
+      cancelled = true
+    }
   }, [user, authLoading])
 
   // Ansicht/Fach in localStorage speichern
@@ -176,21 +261,25 @@ function App() {
   }
 
   useEffect(() => {
-    if (!user?.id || authLoading || !supabase) return
+    if (!user?.id || authLoading || !supabase) {
+      setPlanPickReady(false)
+      return
+    }
     let mounted = true
     const todayKey = toLocalDateKey()
     const oncePerDayKey = `studiio_task_carryover_prompted_${todayKey}`
-    if (typeof window !== 'undefined' && window.localStorage.getItem(oncePerDayKey) === '1') return
 
     async function loadCarryoverTasks() {
       try {
+        if (typeof window !== 'undefined' && window.localStorage.getItem(oncePerDayKey) === '1') {
+          return
+        }
+
         const today = toLocalDateKey()
         const yesterdayDate = new Date()
         yesterdayDate.setDate(yesterdayDate.getDate() - 1)
         const yesterday = toLocalDateKey(yesterdayDate)
 
-        // Aktivitätszustand bestimmen: gestern aktiv => nur gestrige offenen Aufgaben.
-        // Sonst (mehrere Tage inaktiv) => alle überfälligen offenen Aufgaben.
         const { data: streakData } = await supabase
           .from('user_streaks')
           .select('last_activity_date')
@@ -198,7 +287,6 @@ function App() {
           .maybeSingle()
         const lastActivity = streakData?.last_activity_date ? String(streakData.last_activity_date).slice(0, 10) : null
         const daysSinceLastActivity = dayDiffFromToday(lastActivity)
-        // "yesterday"-Modus auch dann, wenn gestern ODER heute bereits Aktivität vorlag.
         const mode = daysSinceLastActivity != null && daysSinceLastActivity <= 1 ? 'yesterday' : 'all_open'
 
         let query = supabase
@@ -237,12 +325,334 @@ function App() {
         })
       } catch (e) {
         console.error('Übernahme-Dialog Fehler:', e)
+      } finally {
+        if (mounted) setPlanPickReady(true)
       }
     }
 
     loadCarryoverTasks()
-    return () => { mounted = false }
+    return () => {
+      mounted = false
+    }
   }, [user?.id, authLoading])
+
+  // Start-Hinweis: optional zuerst Tutor fortsetzen, sonst Aufgabenwahl (mehrfach am Tag möglich; Snooze 10 Min.)
+  // `welcomeStartOpen` gehört nicht in die Dependencies: beim Schließen (z. B. „Zum Lernplan“) würde der Effect
+  // sonst sofort erneut laufen und den Dialog wieder öffnen.
+  useEffect(() => {
+    if (!user?.id || authLoading || !supabase || !planPickReady || !sessionRestoreDone) return
+    if (carryoverModal.open) return
+    if (activeView !== 'overview' || selectedSubject) return
+    if (getWelcomeSnoozeUntil()) return
+    if (isWelcomeMutedToday()) return
+    if (welcomeStartOpen || welcomePendingNav) return
+
+    let mounted = true
+    const todayKey = toLocalDateKey()
+
+    async function loadWelcomeFlow() {
+      try {
+        const [{ data: subjectRows, error: subErr }, taskRes, { data: progList, error: progErr }] =
+          await Promise.all([
+            supabase.from('subjects').select('id, name, group_label, exam_date').eq('user_id', user.id),
+            supabase
+              .from('learning_plan_tasks')
+              .select('id, title, type, subject_id, material_id, scheduled_at, external_url')
+              .eq('user_id', user.id)
+              .is('completed_at', null)
+              .order('scheduled_at', { ascending: true }),
+            supabase
+              .from('tutor_progress')
+              .select('material_id, subject_id, updated_at, started, is_completed')
+              .eq('user_id', user.id)
+              .eq('is_completed', false)
+              .eq('started', true)
+              .order('updated_at', { ascending: false })
+              .limit(1),
+          ])
+        if (!mounted) return
+        let taskRows = taskRes.data
+        let taskErr = taskRes.error
+        if (taskErr && isMissingExternalUrlColumn(taskErr)) {
+          const r2 = await supabase
+            .from('learning_plan_tasks')
+            .select('id, title, type, subject_id, material_id, scheduled_at')
+            .eq('user_id', user.id)
+            .is('completed_at', null)
+            .order('scheduled_at', { ascending: true })
+          if (!mounted) return
+          taskRows = (r2.data || []).map((t) => ({ ...t, external_url: null }))
+          taskErr = r2.error
+        }
+        if (subErr || taskErr) {
+          if (subErr) console.error('Start-Dialog: Fächer laden fehlgeschlagen:', subErr)
+          if (taskErr) console.error('Start-Dialog: Aufgaben laden fehlgeschlagen:', taskErr)
+          return
+        }
+        if (progErr) console.error('Start-Dialog: Tutor-Fortschritt laden fehlgeschlagen:', progErr)
+
+        const subjects = subjectRows || []
+        const open = (taskRows || []).filter((t) => taskScheduledOnOrBeforeToday(t, todayKey))
+
+        let resumeHint = null
+        const prog = Array.isArray(progList) ? progList[0] : null
+        if (prog?.material_id) {
+          const { data: mat, error: matErr } = await supabase
+            .from('materials')
+            .select('id, filename, subject_id')
+            .eq('id', prog.material_id)
+            .eq('user_id', user.id)
+            .is('deleted_at', null)
+            .maybeSingle()
+          if (!mounted) return
+          if (!matErr && mat?.id) {
+            const sid = prog.subject_id || mat.subject_id
+            const sub = subjects.find((s) => s.id === sid)
+            if (sub) {
+              resumeHint = {
+                subject: sub,
+                materialId: mat.id,
+                materialFilename: mat.filename || 'Datei',
+                updatedAt: prog.updated_at,
+              }
+            }
+          }
+        }
+
+        if (!resumeHint && !open.length) return
+
+        setWelcomeStartSubjects(subjects)
+        /* Im Dialog mehr Aufgaben zeigen; „beliebig“ wählen geht zusätzlich über den Lernplan-Link. */
+        setWelcomeStartTasks(open.slice(0, 50))
+        if (resumeHint) {
+          setWelcomeResumeHint(resumeHint)
+          setWelcomeFlowStep('resume')
+        } else {
+          setWelcomeResumeHint(null)
+          setWelcomeFlowStep('pick')
+        }
+        setWelcomeStartOpen(true)
+      } catch (e) {
+        console.error('Start-Dialog Fehler:', e)
+      }
+    }
+
+    loadWelcomeFlow()
+    return () => {
+      mounted = false
+    }
+  }, [
+    user?.id,
+    authLoading,
+    planPickReady,
+    sessionRestoreDone,
+    carryoverModal.open,
+    activeView,
+    selectedSubject,
+    welcomeFocusNonce,
+    welcomePendingNav,
+  ])
+
+  useEffect(() => {
+    const onFocus = () => setWelcomeFocusNonce((x) => x + 1)
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+
+  useEffect(() => {
+    if (!user?.id) {
+      clearMiniFocusSession()
+      clearPomodoroFocusStorage()
+      setWelcomeTaskFollowup(null)
+      setWelcomeFollowupError('')
+      setWelcomeFollowupSaving(false)
+      setWelcomeStartOpen(false)
+      setWelcomeStartTasks([])
+      setWelcomeStartSubjects([])
+      setWelcomeFlowStep('pick')
+      setWelcomeResumeHint(null)
+      if (welcomeNavigateTimeoutRef.current) {
+        clearTimeout(welcomeNavigateTimeoutRef.current)
+        welcomeNavigateTimeoutRef.current = null
+      }
+      setWelcomePendingNav(null)
+    }
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!selectedSubject) {
+      pauseMiniFocusSession()
+    }
+  }, [selectedSubject])
+
+  useEffect(() => {
+    if (selectedSubject && showStandaloneSubjectPlan) {
+      pauseMiniFocusSession()
+    }
+  }, [selectedSubject, showStandaloneSubjectPlan])
+
+  useEffect(() => {
+    if (activeView !== 'overview' || selectedSubject) {
+      setWelcomeStartOpen(false)
+      setWelcomeFlowStep('pick')
+      setWelcomeResumeHint(null)
+      if (welcomeNavigateTimeoutRef.current) {
+        clearTimeout(welcomeNavigateTimeoutRef.current)
+        welcomeNavigateTimeoutRef.current = null
+      }
+      setWelcomePendingNav(null)
+    }
+  }, [activeView, selectedSubject])
+
+  useEffect(() => {
+    if (!welcomePendingNav) return
+    const id = window.setInterval(() => setWelcomeTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [welcomePendingNav])
+
+  function closeWelcomeModal() {
+    setWelcomeStartOpen(false)
+    setWelcomeFlowStep('pick')
+    setWelcomeResumeHint(null)
+  }
+
+  /** Schließt den Start-Dialog, scrollt zum Lernplan und öffnet dort das Formular für eine neue Aufgabe. */
+  function openLearningPlanFromWelcome() {
+    closeWelcomeModal()
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        document.getElementById('studiio-learning-plan-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        /* Nach dem Scroll das Eingabeformular öffnen (LearningPlan hört auf dieses Event). */
+        window.setTimeout(() => {
+          try {
+            window.dispatchEvent(new Event('studiio-open-learning-plan-add'))
+          } catch (_) {}
+        }, 450)
+      }, 80)
+    })
+  }
+
+  function snoozeWelcomeModal() {
+    try {
+      localStorage.setItem(WELCOME_SNOOZE_KEY, String(Date.now() + WELCOME_REMIND_SNOOZE_MS))
+    } catch (_) {}
+    closeWelcomeModal()
+  }
+
+  function muteWelcomeForToday() {
+    try {
+      localStorage.setItem(`studiio_welcome_flow_mute_${toLocalDateKey()}`, '1')
+    } catch (_) {}
+    closeWelcomeModal()
+  }
+
+  function handleResumeContinue() {
+    const h = welcomeResumeHint
+    if (!h?.subject?.id || !h?.materialId) return
+    armMiniFocusSession()
+    closeWelcomeModal()
+    setShowStandaloneSubjectPlan(false)
+    setSelectedSubject(h.subject)
+    setOpenToPractice(false)
+    setOpenToTutorMaterialId(h.materialId)
+  }
+
+  function clearWelcomePendingNavigate() {
+    if (welcomeNavigateTimeoutRef.current) {
+      clearTimeout(welcomeNavigateTimeoutRef.current)
+      welcomeNavigateTimeoutRef.current = null
+    }
+    setWelcomePendingNav(null)
+  }
+
+  function executeWelcomeNavigation(task, subjects) {
+    if (welcomeNavigateTimeoutRef.current) {
+      clearTimeout(welcomeNavigateTimeoutRef.current)
+      welcomeNavigateTimeoutRef.current = null
+    }
+    setWelcomePendingNav(null)
+
+    openLearningPlanExternalUrlSafely(task?.external_url)
+
+    const sub = task.subject_id ? subjects.find((s) => s.id === task.subject_id) : null
+    if (sub) armMiniFocusSession()
+
+    const labelLine = getWelcomeTaskLabel(task, subjects)
+    const queueFollowupModal = () => {
+      if (needsWelcomeTaskFollowupModal(task)) {
+        setWelcomeFollowupError('')
+        setWelcomeTaskFollowup({ task, labelLine })
+      }
+    }
+
+    if (task.type === 'vocab' && sub) {
+      setShowStandaloneSubjectPlan(false)
+      setSelectedSubject(sub)
+      setOpenToPractice(true)
+      setOpenToTutorMaterialId(null)
+      return
+    }
+    if (task.type === 'tutor' && sub) {
+      setShowStandaloneSubjectPlan(false)
+      setSelectedSubject(sub)
+      setOpenToPractice(false)
+      setOpenToTutorMaterialId(task.material_id || null)
+      return
+    }
+    if (task.type === 'exam' && sub) {
+      setShowStandaloneSubjectPlan(false)
+      setSelectedSubject(sub)
+      setOpenToPractice(false)
+      setOpenToTutorMaterialId(null)
+      queueFollowupModal()
+      return
+    }
+    if (sub) {
+      setShowStandaloneSubjectPlan(false)
+      setSelectedSubject(sub)
+      setOpenToPractice(false)
+      setOpenToTutorMaterialId(null)
+      queueFollowupModal()
+      return
+    }
+    window.setTimeout(() => {
+      document.getElementById('studiio-learning-plan-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      queueFollowupModal()
+    }, 150)
+  }
+
+  function dismissWelcomeTaskFollowup() {
+    setWelcomeTaskFollowup(null)
+    setWelcomeFollowupError('')
+    setWelcomeFollowupSaving(false)
+  }
+
+  async function handleWelcomeTaskFollowupComplete() {
+    if (!user?.id || !welcomeTaskFollowup?.task?.id) return
+    setWelcomeFollowupSaving(true)
+    setWelcomeFollowupError('')
+    const { error } = await completeTask(user.id, welcomeTaskFollowup.task.id)
+    setWelcomeFollowupSaving(false)
+    if (error) {
+      console.error('Start-Follow-up: Aufgabe konnte nicht abgehakt werden:', error)
+      setWelcomeFollowupError('Speichern hat nicht geklappt. Bitte später im Lernplan erneut versuchen.')
+      return
+    }
+    dismissWelcomeTaskFollowup()
+  }
+
+  function scheduleWelcomeNavigation(task) {
+    const subjects = [...welcomeStartSubjects]
+    clearWelcomePendingNavigate()
+    closeWelcomeModal()
+    const endsAt = Date.now() + WELCOME_START_DELAY_MS
+    const labelLine = getWelcomeTaskLabel(task, subjects)
+    setWelcomePendingNav({ task, subjects, endsAt, labelLine })
+    welcomeNavigateTimeoutRef.current = window.setTimeout(() => {
+      welcomeNavigateTimeoutRef.current = null
+      executeWelcomeNavigation(task, subjects)
+    }, WELCOME_START_DELAY_MS)
+  }
 
   function toggleCarryoverTask(taskId) {
     setCarryoverModal((prev) => {
@@ -334,21 +744,23 @@ function App() {
   function renderMainContent() {
     if (selectedSubject && showStandaloneSubjectPlan) {
       return (
-        <SubjectPlanMode
-          user={user}
-          subject={selectedSubject}
-          onBack={() => {
-            setShowStandaloneSubjectPlan(false)
-          }}
-          onActiveSubjectChange={(nextSubject) => {
-            if (!nextSubject?.id) return
-            setSelectedSubject(nextSubject)
-          }}
-          showHeader
-          showCatalog
-          interactive
-          allowSubjectSelection
-        />
+        <div className="min-h-0 w-full">
+          <SubjectPlanMode
+            user={user}
+            subject={selectedSubject}
+            onBack={() => {
+              setShowStandaloneSubjectPlan(false)
+            }}
+            onActiveSubjectChange={(nextSubject) => {
+              if (!nextSubject?.id) return
+              setSelectedSubject(nextSubject)
+            }}
+            showHeader
+            showCatalog
+            interactive
+            allowSubjectSelection
+          />
+        </div>
       )
     }
 
@@ -358,6 +770,9 @@ function App() {
           user={user}
           subject={selectedSubject}
           onBack={() => {
+            if (!confirmFocusLeaveIfNeeded()) return
+            dispatchPomodoroPauseForLeave()
+            pauseMiniFocusSession()
             setShowStandaloneSubjectPlan(false)
             setSelectedSubject(null)
           }}
@@ -522,6 +937,7 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
+                  if (!confirmFocusLeaveIfNeeded()) return
                   setActiveView('overview')
                   setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
@@ -533,6 +949,8 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
+                  if (!confirmFocusLeaveIfNeeded()) return
+                  dispatchPomodoroPauseForLeave()
                   setActiveView('subjects')
                   setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
@@ -544,6 +962,8 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
+                  if (!confirmFocusLeaveIfNeeded()) return
+                  dispatchPomodoroPauseForLeave()
                   setActiveView('statistics')
                   setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
@@ -555,6 +975,8 @@ function App() {
               <button
                 type="button"
                 onClick={() => {
+                  if (!confirmFocusLeaveIfNeeded()) return
+                  dispatchPomodoroPauseForLeave()
                   setActiveView('settings')
                   setShowStandaloneSubjectPlan(false)
                   setSelectedSubject(null)
@@ -581,6 +1003,236 @@ function App() {
           </Suspense>
         </main>
       </div>
+      <PomodoroTimer
+        elevated={Boolean(
+          (welcomePendingNav && activeView === 'overview' && !selectedSubject) || selectedSubject,
+        )}
+      />
+      {welcomeStartOpen && activeView === 'overview' && !selectedSubject && user && (
+        <div className="fixed inset-0 z-[68] flex items-center justify-center bg-black/30 px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-studiio-lavender/40 bg-gradient-to-br from-white via-[#f8fbff] to-[#f3fff8] p-5 shadow-xl">
+            {welcomeFlowStep === 'resume' && welcomeResumeHint ? (
+              <>
+                <h3 className="text-lg font-semibold text-studiio-ink">Schön, dass du wieder da bist</h3>
+                <p className="mt-2 text-sm text-studiio-muted leading-relaxed">
+                  Du warst zuletzt beim <strong className="text-studiio-ink">Tutor</strong> für{' '}
+                  <strong className="text-studiio-ink">{welcomeResumeHint.materialFilename}</strong> im Fach{' '}
+                  <strong className="text-studiio-ink">{welcomeResumeHint.subject.name}</strong> — und hast noch nicht abgeschlossen.{' '}
+                  <strong className="text-studiio-ink">Möchtest du dort weitermachen?</strong>
+                </p>
+                <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleResumeContinue}
+                    className="rounded-lg bg-studiio-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-studiio-accentHover"
+                  >
+                    Ja, weitermachen
+                  </button>
+                  {welcomeStartTasks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWelcomeFlowStep('pick')
+                        setWelcomeResumeHint(null)
+                      }}
+                      className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+                    >
+                      Etwas anderes wählen
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={openLearningPlanFromWelcome}
+                    className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+                  >
+                    Zum Lernplan — Aufgabe wählen oder neu anlegen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={snoozeWelcomeModal}
+                    className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/20"
+                  >
+                    In 10 Min. erinnern — erst planen
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold text-studiio-ink">Schön, dass du da bist, {getDisplayName(user)}!</h3>
+                <p className="mt-2 text-sm text-studiio-muted leading-relaxed">
+                  <strong className="text-studiio-ink">Womit möchtest du in zwei Minuten anfangen?</strong> Kurz orientieren — dann starten wir automatisch. Oft reichen schon{' '}
+                  <strong className="text-studiio-ink">wenige Minuten Fokus</strong>, um gut reinzukommen; du entscheidest, wie lange du dranbleibst.{' '}
+                  <span className="text-studiio-ink/90">
+                    Passt nichts hier? Im Lernplan siehst du alle geplanten Aufgaben und kannst dir eine neue anlegen.
+                  </span>
+                </p>
+                {welcomeStartTasks.length === 0 ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm text-studiio-muted">
+                      Keine offenen Aufgaben für heute in dieser Kurzliste — im Lernplan findest du den vollen Plan und kannst sofort etwas Neues eintragen.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={openLearningPlanFromWelcome}
+                      className="w-full rounded-lg bg-studiio-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-studiio-accentHover sm:w-auto"
+                    >
+                      Zum Lernplan
+                    </button>
+                  </div>
+                ) : (
+                  <ul className="mt-4 max-h-[min(50vh,22rem)] space-y-2 overflow-auto">
+                    {welcomeStartTasks.map((task) => {
+                      const sub = task.subject_id ? welcomeStartSubjects.find((s) => s.id === task.subject_id) : null
+                      const line = getWelcomeTaskLabel(task, welcomeStartSubjects)
+                      const timeStr = task.scheduled_at
+                        ? new Date(task.scheduled_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+                        : ''
+                      return (
+                        <li key={task.id}>
+                          <button
+                            type="button"
+                            onClick={() => scheduleWelcomeNavigation(task)}
+                            className="flex w-full items-start gap-2 rounded-xl border border-studiio-lavender/50 bg-white/90 px-3 py-2.5 text-left text-sm shadow-sm transition hover:border-studiio-accent/50 hover:bg-studiio-sky/10"
+                          >
+                            <span
+                              className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${getTaskTypeBadgeClass(task.type)}`}
+                            >
+                              {getTaskTypeLabel(task.type)}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block break-words font-medium text-studiio-ink">{line}</span>
+                              {(sub || timeStr) && (
+                                <span className="mt-0.5 block text-xs text-studiio-muted">
+                                  {[sub?.name, timeStr].filter(Boolean).join(' · ')}
+                                </span>
+                              )}
+                            </span>
+                            <span className="shrink-0 text-lg leading-none text-studiio-accent" aria-hidden>
+                              ➜
+                            </span>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+                {welcomeStartTasks.length > 0 && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={openLearningPlanFromWelcome}
+                      className="w-full rounded-lg border border-dashed border-studiio-accent/40 bg-studiio-sky/10 px-3 py-2.5 text-left text-sm font-medium text-studiio-ink hover:bg-studiio-sky/25 sm:text-center"
+                    >
+                      Andere Aufgabe oder neu anlegen — zum vollen Lernplan
+                    </button>
+                  </div>
+                )}
+                <div className="mt-4 flex flex-col gap-2 border-t border-studiio-lavender/30 pt-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                  <button
+                    type="button"
+                    onClick={snoozeWelcomeModal}
+                    className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+                  >
+                    In 10 Min. erinnern — erst planen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={muteWelcomeForToday}
+                    className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/20"
+                  >
+                    Heute nicht mehr erinnern
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {welcomeTaskFollowup && user && (
+        <div className="fixed inset-0 z-[72] flex items-center justify-center bg-black/35 px-4">
+          <div
+            className="w-full max-w-md rounded-2xl border border-studiio-lavender/50 bg-gradient-to-br from-white via-[#f8fbff] to-[#fff8ef] p-5 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="welcome-followup-title"
+          >
+            <h3 id="welcome-followup-title" className="text-lg font-semibold text-studiio-ink">
+              Zeit für …
+            </h3>
+            <p className="mt-2 text-sm font-medium leading-snug text-studiio-ink">
+              {welcomeTaskFollowup.labelLine}
+            </p>
+            <p className="mt-2 text-sm text-studiio-muted leading-relaxed">
+              Du kannst die App ganz normal nutzen. Wenn du fertig bist, markiere die Aufgabe hier als erledigt — oder
+              schließ dieses Fenster und hake später im Lernplan ab.
+            </p>
+            {welcomeFollowupError && (
+              <p className="mt-2 text-xs text-red-600" role="alert">
+                {welcomeFollowupError}
+              </p>
+            )}
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+              <button
+                type="button"
+                onClick={dismissWelcomeTaskFollowup}
+                className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-ink hover:bg-studiio-lavender/20"
+              >
+                Weiter ohne abhaken
+              </button>
+              <button
+                type="button"
+                onClick={handleWelcomeTaskFollowupComplete}
+                disabled={welcomeFollowupSaving}
+                className="rounded-lg bg-studiio-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-studiio-accentHover disabled:opacity-60"
+              >
+                {welcomeFollowupSaving ? 'Speichert …' : 'Erledigt'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {welcomePendingNav && activeView === 'overview' && !selectedSubject && user && (
+        <div
+          className="fixed bottom-0 left-0 right-0 z-[69] border-t border-teal-200/80 bg-gradient-to-r from-teal-50/98 via-white/98 to-[#f3fff8]/98 px-4 py-3 shadow-[0_-8px_24px_rgba(57,67,105,0.12)]"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="mx-auto flex w-full max-w-[1320px] flex-wrap items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 text-sm text-studiio-ink">
+              <span className="font-semibold">Gleich geht&apos;s los:</span>{' '}
+              <span className="break-words">{welcomePendingNav.labelLine}</span>
+              <span className="mt-0.5 block text-xs text-studiio-muted">
+                Automatischer Start in{' '}
+                <span className="font-mono font-semibold text-studiio-ink">
+                  {formatMmSsFromMs(Math.max(0, welcomePendingNav.endsAt - Date.now()))}
+                </span>{' '}
+                — kurz sammeln, dann ohne weiteres Klicken weiter.
+              </span>
+            </p>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => executeWelcomeNavigation(welcomePendingNav.task, welcomePendingNav.subjects)}
+                className="rounded-lg bg-studiio-accent px-3 py-2 text-sm font-medium text-white hover:bg-studiio-accentHover"
+              >
+                Jetzt starten
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    localStorage.setItem(WELCOME_SNOOZE_KEY, String(Date.now() + WELCOME_REMIND_SNOOZE_MS))
+                  } catch (_) {}
+                  clearWelcomePendingNavigate()
+                }}
+                className="rounded-lg border border-studiio-lavender/70 px-3 py-2 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/20"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {carryoverModal.open && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 px-4">
           <div className="w-full max-w-xl rounded-2xl border border-studiio-lavender/40 bg-gradient-to-br from-white via-[#f8fbff] to-[#f3fff8] p-4 shadow-xl">

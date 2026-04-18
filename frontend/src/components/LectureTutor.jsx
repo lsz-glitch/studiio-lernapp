@@ -6,6 +6,10 @@ import { completeTutorTasksForMaterial } from '../utils/learningPlan'
 import CompletionCelebration from './CompletionCelebration'
 import { getApiBase } from '../config'
 import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
+import MiniFocusHint from './MiniFocusHint'
+import { resumeMiniFocusSession } from '../utils/miniFocusSession'
+import { dispatchPomodoroPauseForLeave, dispatchPomodoroResumeAfterTask } from '../utils/pomodoroFocusBridge'
+import { confirmFocusLeaveIfNeeded } from '../utils/focusLeaveConfirm'
 import { getUserAiConfig } from '../utils/aiProvider'
 
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
@@ -199,6 +203,11 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       // stilles Fallback, UI bleibt benutzbar
     }
   }
+
+  useEffect(() => {
+    resumeMiniFocusSession()
+    dispatchPomodoroResumeAfterTask()
+  }, [])
 
   // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
   useEffect(() => {
@@ -1200,6 +1209,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
         <button
           type="button"
           onClick={async () => {
+            if (!confirmFocusLeaveIfNeeded({ tutorLessonIncomplete: !isCompleted })) return
+            dispatchPomodoroPauseForLeave()
             const totalSec = (Date.now() - sessionStartRef.current) / 1000
             const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
             if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
@@ -1228,6 +1239,10 @@ function LectureTutorInner({ user, subject, material, onBack }) {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="flex-shrink-0 pb-1">
+        <MiniFocusHint />
       </div>
 
       {/* Hauptbereich: volle Höhe, 2 Spalten */}

@@ -5,11 +5,7 @@ import LearningPlan from './LearningPlan'
 import { getApiBase } from '../config'
 import { getStreak } from '../utils/streak'
 import { formatLearningTime, getTodayLearningTimeDb, getTodayLearningTimeLocal } from '../utils/learningTime'
-
-function getAccentByIndex(index) {
-  const accents = ['#4fb4ad', '#e2ad4f', '#9fc7a3', '#df9a96', '#9ea8c2', '#88b6dc']
-  return accents[index % accents.length]
-}
+import { getAccentByIndex } from '../utils/subjectAccent'
 
 function formatCountdown(examDate) {
   if (!examDate) return 'Kein Termin eingetragen'
@@ -1001,7 +997,7 @@ export default function DashboardSubjects({
       )}
 
       {showLearningPlanSection && (
-        <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <section id="studiio-learning-plan-anchor" className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <LearningPlan
             user={user}
             subjects={subjects}

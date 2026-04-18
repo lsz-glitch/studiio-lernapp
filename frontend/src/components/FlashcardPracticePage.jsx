@@ -1,9 +1,12 @@
 import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 import FlashcardPractice from './FlashcardPractice'
+import MiniFocusHint from './MiniFocusHint'
+import { resumeMiniFocusSession } from '../utils/miniFocusSession'
+import { dispatchPomodoroPauseForLeave, dispatchPomodoroResumeAfterTask } from '../utils/pomodoroFocusBridge'
+import { confirmFocusLeaveIfNeeded } from '../utils/focusLeaveConfirm'
 import FlashcardEditModal from './FlashcardEditModal'
 import { addLearningTime } from '../utils/learningTime'
-import { completeVocabTasksForSubjectToday } from '../utils/learningPlan'
 
 export default function FlashcardPracticePage({ user, subject, materialFilter = null, onBack }) {
   const [cards, setCards] = useState([])
@@ -21,6 +24,11 @@ export default function FlashcardPracticePage({ user, subject, materialFilter = 
   const sessionStartRef = useRef(Date.now())
   const savedSecondsRef = useRef(0)
 
+  useEffect(() => {
+    resumeMiniFocusSession()
+    dispatchPomodoroResumeAfterTask()
+  }, [])
+
   // Lernzeit alle 60 Sekunden zwischenspeichern (wird nie zurückgesetzt)
   useEffect(() => {
     if (!user?.id || !subject?.id) return
@@ -32,6 +40,9 @@ export default function FlashcardPracticePage({ user, subject, materialFilter = 
   }, [user?.id, subject?.id])
 
   async function handleBack() {
+    const hasDueCards = cards.length > 0
+    if (!confirmFocusLeaveIfNeeded({ flashcardsWithDueCards: hasDueCards })) return
+    dispatchPomodoroPauseForLeave()
     const totalSec = (Date.now() - sessionStartRef.current) / 1000
     const remainder = Math.max(0, Math.round(totalSec) - savedSecondsRef.current)
     if (remainder >= 1 && user?.id && subject?.id) await addLearningTime(user.id, subject.id, remainder)
@@ -118,6 +129,9 @@ export default function FlashcardPracticePage({ user, subject, materialFilter = 
           <p className="text-xs text-studiio-muted mt-1">Filter: {materialFilter.filename}</p>
         )}
         <p className="text-xs text-studiio-muted mt-1">Du machst das großartig – jede Karte bringt dich sicherer Richtung Prüfung.</p>
+        <div className="mt-2 max-w-xl">
+          <MiniFocusHint />
+        </div>
       </div>
       <div className="flex-1 p-4 md:p-6 max-w-6xl mx-auto w-full">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -140,6 +154,7 @@ export default function FlashcardPracticePage({ user, subject, materialFilter = 
               <FlashcardPractice
                 user={user}
                 cards={cards}
+                learningPlanSubjectId={subject?.id || null}
                 onBack={handleBack}
                 onEditCard={(card) => setEditingCard(card)}
                 onCardChange={setActiveCard}

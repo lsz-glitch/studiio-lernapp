@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient'
-import { completeTask, uncompleteTask, updateTask } from '../utils/learningPlan'
+import { completeTask, uncompleteTask, updateTask, deleteTask } from '../utils/learningPlan'
+import { sanitizeLearningPlanExternalUrl } from '../utils/safeExternalUrl'
 import CompletionCelebration from './CompletionCelebration'
+import { getSubjectAccent } from '../utils/subjectAccent'
 
 const TASK_TYPES = [
   { value: 'tutor', label: 'Datei mit Tutor durcharbeiten' },
@@ -102,22 +104,6 @@ function getThreeDayFocus(startKey) {
   return out
 }
 
-const SUBJECT_COLORS = ['#4fb4ad', '#e2ad4f', '#9fc7a3', '#df9a96', '#9ea8c2', '#88b6dc', '#b897f0', '#7fb8a4']
-
-function hashStringToIndex(input, modulo) {
-  const text = String(input || '')
-  let hash = 0
-  for (let i = 0; i < text.length; i++) {
-    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0
-  }
-  return Math.abs(hash) % modulo
-}
-
-function getSubjectColor(subject) {
-  if (!subject?.id) return '#94a3b8'
-  return SUBJECT_COLORS[hashStringToIndex(subject.id, SUBJECT_COLORS.length)]
-}
-
 function getTaskTypeLabel(type) {
   if (type === 'tutor') return 'Tutor'
   if (type === 'vocab') return 'Vokabeln'
@@ -131,6 +117,15 @@ function normalizeText(value) {
 
 function isFileLinkedTask(task) {
   return !!task?.material_id
+}
+
+/** Vokabel-Aufgaben mit Fach: werden nach echtem Üben automatisch abgehakt (kein manuelles Häkchen). */
+function isAutoVocabTask(task) {
+  return task?.type === 'vocab' && !!task?.subject_id
+}
+
+function isAutoManagedTask(task) {
+  return isFileLinkedTask(task) || isAutoVocabTask(task)
 }
 
 function buildRecurringSchedule(baseDate, repeatRule, occurrenceCount, everyValue, everyUnit, infinite = false) {
@@ -163,6 +158,12 @@ function isMissingDescriptionColumn(error) {
   return code === '42703' || (msg.includes('description') && msg.includes('column'))
 }
 
+function isMissingExternalUrlColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return code === '42703' || (msg.includes('external_url') && msg.includes('column'))
+}
+
 export default function LearningPlan({ user, subjects, onOpenSubject, onStartPractice, onOpenTutor, onOpenSubjectPlan, refreshTrigger }) {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -173,6 +174,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   const [materials, setMaterials] = useState([])
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [externalUrl, setExternalUrl] = useState('')
   const [scheduledDate, setScheduledDate] = useState('')
   const [scheduledTime, setScheduledTime] = useState('')
   const [repeatRule, setRepeatRule] = useState('none')
@@ -184,6 +186,9 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   const [editingSeriesCount, setEditingSeriesCount] = useState(1)
   const [saving, setSaving] = useState(false)
   const [completingId, setCompletingId] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+  /** Kurze Fehlermeldung unter der Lernplan-Überschrift (Löschen, Abhaken, Verschieben, Speichern). */
+  const [planFeedback, setPlanFeedback] = useState('')
   const [editingTask, setEditingTask] = useState(null)
   const [expandedTaskId, setExpandedTaskId] = useState('')
   const [draggingTaskId, setDraggingTaskId] = useState(null)
@@ -196,10 +201,27 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setLoading(true)
     supabase
       .from('learning_plan_tasks')
-      .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
+      .select('id, type, subject_id, material_id, title, description, external_url, scheduled_at, completed_at')
       .eq('user_id', user.id)
       .order('scheduled_at', { ascending: true })
       .then(async ({ data, error }) => {
+        if (error && isMissingExternalUrlColumn(error)) {
+          const retry = await supabase
+            .from('learning_plan_tasks')
+            .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
+            .eq('user_id', user.id)
+            .order('scheduled_at', { ascending: true })
+          if (!mounted) return
+          if (retry.error) {
+            console.error('Lernplan laden:', retry.error)
+            setTasks([])
+            setLoading(false)
+            return
+          }
+          setTasks((retry.data || []).map((t) => ({ ...t, external_url: null })))
+          setLoading(false)
+          return
+        }
         // Fallback für ältere DBs ohne "description"-Spalte.
         if (error && isMissingDescriptionColumn(error)) {
           const retry = await supabase
@@ -214,7 +236,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
             setLoading(false)
             return
           }
-          setTasks((retry.data || []).map((t) => ({ ...t, description: null })))
+          setTasks((retry.data || []).map((t) => ({ ...t, description: null, external_url: null })))
           setLoading(false)
           return
         }
@@ -306,6 +328,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setMaterialId('')
     setTitle('')
     setDescription('')
+    setExternalUrl('')
     setScheduledDate('')
     setScheduledTime('')
     setRepeatRule('none')
@@ -316,9 +339,36 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setEditApplyScope('single')
     setEditingSeriesCount(1)
     setShowForm(false)
+    setPlanFeedback('')
   }
 
+  /** Gleiche Logik wie beim Klick auf „+ Aufgabe hinzufügen“ (neues manuelles Formular). */
+  const openAddTaskForm = useCallback(() => {
+    setEditingTask(null)
+    setType('manual')
+    setSubjectId('')
+    setMaterialId('')
+    setTitle('')
+    setDescription('')
+    setExternalUrl('')
+    setScheduledDate('')
+    setScheduledTime('')
+    setRepeatRule('none')
+    setRepeatCount(6)
+    setRepeatEvery(2)
+    setRepeatUnit('days')
+    setRepeatInfinite(false)
+    setShowForm(true)
+    setPlanFeedback('')
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('studiio-open-learning-plan-add', openAddTaskForm)
+    return () => window.removeEventListener('studiio-open-learning-plan-add', openAddTaskForm)
+  }, [openAddTaskForm])
+
   async function startEdit(task) {
+    setPlanFeedback('')
     setEditApplyScope('single')
     setEditingSeriesCount(1)
     setType(task.type)
@@ -326,6 +376,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     setMaterialId(task.material_id || '')
     setTitle(task.title || '')
     setDescription(task.description || '')
+    setExternalUrl(task.external_url || '')
     setScheduledDate(task.scheduled_at ? task.scheduled_at.slice(0, 10) : '')
     setScheduledTime(task.scheduled_at ? task.scheduled_at.slice(11, 16) : '09:00')
     setRepeatRule('none')
@@ -389,6 +440,9 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       return
     }
 
+    const safeExternal = sanitizeLearningPlanExternalUrl(externalUrl)
+
+    setPlanFeedback('')
     setSaving(true)
     if (editingTask) {
       const updatePayload = {
@@ -397,6 +451,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
         material_id: type === 'tutor' && materialId !== '__any_exercise__' ? materialId || null : null,
         title: taskTitle,
         description: description.trim() || null,
+        external_url: safeExternal,
         scheduled_at: scheduledAt,
       }
 
@@ -419,6 +474,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
         if (futureErr) {
           setSaving(false)
           console.error('Serien-Tasks laden:', futureErr)
+          setPlanFeedback('Serie konnte nicht geladen werden. Bitte später erneut versuchen.')
           return
         }
 
@@ -436,6 +492,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
           if (oneErr) {
             setSaving(false)
             console.error('Serien-Task aktualisieren:', oneErr)
+            setPlanFeedback('Speichern der Serie ist fehlgeschlagen. Bitte später erneut versuchen.')
             return
           }
           if (one) updatedRows.push(one)
@@ -457,6 +514,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       setSaving(false)
       if (error) {
         console.error('Task aktualisieren:', error)
+        setPlanFeedback('Änderungen konnten nicht gespeichert werden. Bitte Verbindung prüfen und erneut versuchen.')
         return
       }
       if (data) setTasks((prev) => prev.map((t) => (t.id === data.id ? data : t)))
@@ -477,6 +535,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       type,
       title: taskTitle,
       description: description.trim() || null,
+      external_url: safeExternal,
       scheduled_at: d.toISOString(),
       subject_id: subjectId || null,
       material_id: type === 'tutor' && materialId !== '__any_exercise__' ? materialId || null : null,
@@ -484,22 +543,54 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
     let { data, error } = await supabase
       .from('learning_plan_tasks')
       .insert(payloads)
-      .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
+      .select('id, type, subject_id, material_id, title, description, external_url, scheduled_at, completed_at')
     if (!Array.isArray(data) && data) data = [data]
 
+    if (error && isMissingExternalUrlColumn(error)) {
+      const payloadNoExt = payloads.map(({ external_url: _e, ...rest }) => rest)
+      const retry = await supabase
+        .from('learning_plan_tasks')
+        .insert(payloadNoExt)
+        .select('id, type, subject_id, material_id, title, description, scheduled_at, completed_at')
+      const retryRows = Array.isArray(retry.data) ? retry.data : retry.data ? [retry.data] : []
+      data = retryRows.map((row) => ({ ...row, external_url: safeExternal }))
+      error = retry.error
+    }
+
     if (error && isMissingDescriptionColumn(error)) {
-      const payloadWithoutDescription = payloads.map(({ description: _description, ...rest }) => rest)
+      const payloadWithoutDescription = payloads.map(({ description: _d, ...rest }) => rest)
       const retry = await supabase
         .from('learning_plan_tasks')
         .insert(payloadWithoutDescription)
-        .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
-      const retryRows = Array.isArray(retry.data) ? retry.data : retry.data ? [retry.data] : []
-      data = retryRows.map((row) => ({ ...row, description: description.trim() || null }))
-      error = retry.error
+        .select('id, type, subject_id, material_id, title, external_url, scheduled_at, completed_at')
+      let retryRows = Array.isArray(retry.data) ? retry.data : retry.data ? [retry.data] : []
+      let retryErr = retry.error
+      if (retryErr && isMissingExternalUrlColumn(retryErr)) {
+        const noExt = payloadWithoutDescription.map(({ external_url: _e, ...r }) => r)
+        const r2 = await supabase
+          .from('learning_plan_tasks')
+          .insert(noExt)
+          .select('id, type, subject_id, material_id, title, scheduled_at, completed_at')
+        retryRows = Array.isArray(r2.data) ? r2.data : r2.data ? [r2.data] : []
+        retryErr = r2.error
+        data = retryRows.map((row) => ({
+          ...row,
+          description: description.trim() || null,
+          external_url: safeExternal,
+        }))
+        error = retryErr
+      } else {
+        data = retryRows.map((row) => ({
+          ...row,
+          description: description.trim() || null,
+        }))
+        error = retryErr
+      }
     }
     setSaving(false)
     if (error) {
       console.error('Task anlegen:', error)
+      setPlanFeedback('Aufgabe konnte nicht angelegt werden. Bitte Verbindung prüfen und erneut versuchen.')
       return
     }
     const insertedRows = Array.isArray(data) ? data : data ? [data] : []
@@ -508,14 +599,27 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   }
 
   async function handleToggle(task) {
-    if (isFileLinkedTask(task)) return
+    if (isAutoManagedTask(task)) return
+    setPlanFeedback('')
     setCompletingId(task.id)
     const done = !!task.completed_at
     if (done) {
-      await uncompleteTask(user.id, task.id)
+      const { error } = await uncompleteTask(user.id, task.id)
+      if (error) {
+        console.error('Task wieder öffnen:', error)
+        setPlanFeedback('Status konnte nicht geändert werden. Bitte später erneut versuchen.')
+        setCompletingId(null)
+        return
+      }
       setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, completed_at: null } : t)))
     } else {
-      await completeTask(user.id, task.id)
+      const { error } = await completeTask(user.id, task.id)
+      if (error) {
+        console.error('Task abhaken:', error)
+        setPlanFeedback('Erledigt-Markierung hat nicht geklappt. Bitte später erneut versuchen.')
+        setCompletingId(null)
+        return
+      }
       setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, completed_at: new Date().toISOString() } : t)))
       openCelebrationForTask(task)
     }
@@ -523,6 +627,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
   }
 
   async function handleMoveTaskToDay(task, targetDateKey) {
+    setPlanFeedback('')
     const t = new Date(task.scheduled_at)
     const newDate = new Date(targetDateKey + 'T12:00:00')
     newDate.setHours(t.getHours(), t.getMinutes(), 0, 0)
@@ -533,9 +638,31 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
       material_id: task.material_id ?? null,
       title: task.title,
       description: task.description ?? null,
+      external_url: sanitizeLearningPlanExternalUrl(task.external_url) ?? null,
       scheduled_at: newScheduledAt,
     })
-    if (!error && data) setTasks((prev) => prev.map((x) => (x.id === task.id ? data : x)))
+    if (error) {
+      console.error('Lernplan: Aufgabe verschieben fehlgeschlagen:', error)
+      setPlanFeedback('Verschieben hat nicht geklappt. Bitte später erneut versuchen.')
+      return
+    }
+    if (data) setTasks((prev) => prev.map((x) => (x.id === task.id ? data : x)))
+    else setTasks((prev) => prev.map((x) => (x.id === task.id ? { ...x, scheduled_at: newScheduledAt } : x)))
+  }
+
+  async function handleDeleteTask(task) {
+    if (!user?.id || !task?.id) return
+    setPlanFeedback('')
+    setDeletingId(task.id)
+    const { error } = await deleteTask(user.id, task.id)
+    setDeletingId(null)
+    if (error) {
+      console.error('Task löschen:', error)
+      setPlanFeedback('Löschen hat nicht geklappt. Bitte prüfen, ob du online bist, und es kurz später erneut versuchen.')
+      return
+    }
+    setTasks((prev) => prev.filter((t) => t.id !== task.id))
+    if (editingTask?.id === task.id) resetForm()
   }
 
   return (
@@ -560,22 +687,7 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
             onClick={() => {
               if (showForm && !editingTask) setShowForm(false)
               else if (showForm && editingTask) resetForm()
-              else {
-                setEditingTask(null)
-                setType('manual')
-                setSubjectId('')
-                setMaterialId('')
-                setTitle('')
-                setDescription('')
-                setScheduledDate('')
-                setScheduledTime('')
-                setRepeatRule('none')
-                setRepeatCount(6)
-                setRepeatEvery(2)
-                setRepeatUnit('days')
-                setRepeatInfinite(false)
-                setShowForm(true)
-              }
+              else openAddTaskForm()
             }}
             className="inline-flex items-center gap-1.5 rounded-full bg-[#49a99b] text-white px-4 py-2 text-sm font-semibold hover:brightness-95"
           >
@@ -584,6 +696,11 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
           </button>
         </div>
       </div>
+      {planFeedback ? (
+        <p className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+          {planFeedback}
+        </p>
+      ) : null}
 
       {showForm && (
         <form onSubmit={handleSubmit} className="mb-4 grid gap-3 rounded-xl border border-studiio-lavender/40 bg-studiio-sky/10 p-4">
@@ -628,6 +745,18 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
           <div>
             <label className="block text-sm font-medium text-studiio-ink mb-1">Beschreibung (optional)</label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Notiz oder Beschreibung zur Aufgabe" rows={2} className="studiio-input w-full resize-y" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-studiio-ink mb-1">Link (optional)</label>
+            <input
+              type="url"
+              inputMode="url"
+              value={externalUrl}
+              onChange={(e) => setExternalUrl(e.target.value)}
+              placeholder="https://… (öffnet beim Start in neuem Tab)"
+              className="studiio-input w-full"
+            />
+            <p className="mt-1 text-xs text-studiio-muted">Nur http(s)-Adressen. Studiio bleibt offen, der Link öffnet sich extra.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -735,9 +864,19 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
               {saving ? 'Wird gespeichert …' : editingTask ? 'Änderungen speichern' : 'Aufgabe eintragen'}
             </button>
             {editingTask && (
-              <button type="button" onClick={resetForm} className="rounded-lg border border-studiio-lavender/60 px-3 py-1.5 text-sm text-studiio-ink hover:bg-studiio-sky/20">
-                Abbrechen
-              </button>
+              <>
+                <button type="button" onClick={resetForm} className="rounded-lg border border-studiio-lavender/60 px-3 py-1.5 text-sm text-studiio-ink hover:bg-studiio-sky/20">
+                  Abbrechen
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingId === editingTask.id || saving}
+                  onClick={() => handleDeleteTask(editingTask)}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                >
+                  {deletingId === editingTask.id ? 'Wird gelöscht …' : 'Löschen'}
+                </button>
+              </>
             )}
           </div>
         </form>
@@ -782,11 +921,11 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
 
             const renderTaskRow = (task) => {
               const done = !!task.completed_at
-              const fileLinked = isFileLinkedTask(task)
+              const autoManaged = isAutoManagedTask(task)
               const subject = subjects.find((s) => s.id === task.subject_id)
               const linkedSubject = resolveSubjectForTask(task)
               const isDragging = draggingTaskId === task.id
-              const accentColor = getSubjectColor(linkedSubject || subject)
+              const accentColor = getSubjectAccent(linkedSubject || subject, subjects)
               const isExpanded = expandedTaskId === task.id
               const compactWrapper = `group rounded-xl border bg-white shadow-sm p-2.5 transition ${
                 done ? 'border-emerald-200 bg-emerald-50/40' : 'border-studiio-lavender/40'
@@ -809,7 +948,6 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                       <p className="mt-0.5 text-[11px] text-studiio-muted">
                         {formatTaskTime(task.scheduled_at)}
                         {linkedSubject?.name ? ` · ${linkedSubject.name}` : ''}
-                        {fileLinked ? ' · automatisch' : ''}
                       </p>
                       {isExpanded && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-3.5" onClick={(e) => e.stopPropagation()}>
@@ -838,7 +976,15 @@ export default function LearningPlan({ user, subjects, onOpenSubject, onStartPra
                           >
                             Bearbeiten
                           </button>
-                          {!fileLinked && (
+                          <button
+                            type="button"
+                            disabled={deletingId === task.id}
+                            onClick={() => handleDeleteTask(task)}
+                            className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                          >
+                            {deletingId === task.id ? '…' : 'Löschen'}
+                          </button>
+                          {!autoManaged && (
                             <button
                               type="button"
                               disabled={completingId === task.id}

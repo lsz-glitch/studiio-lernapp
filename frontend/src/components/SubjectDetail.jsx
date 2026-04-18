@@ -6,6 +6,9 @@ import FlashcardCreateModal from './FlashcardCreateModal'
 import FlashcardPracticePage from './FlashcardPracticePage'
 import SubjectPlanMode from './SubjectPlanMode'
 import { getLearningTime, formatLearningTime } from '../utils/learningTime'
+import MiniFocusHint from './MiniFocusHint'
+import { pauseMiniFocusSession } from '../utils/miniFocusSession'
+import { openLearningPlanExternalUrlSafely } from '../utils/safeExternalUrl'
 
 function isHarmlessAbortError(err) {
   const message = String(err?.message || '').toLowerCase()
@@ -305,6 +308,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
 
   async function handlePlannedTaskClick(task) {
     if (!task) return
+    openLearningPlanExternalUrlSafely(task.external_url)
     if (task.type === 'tutor' && task.material_id) {
       const material = await resolveMaterialById(task.material_id)
       if (material) setActiveLecture(material)
@@ -358,7 +362,12 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         user={user}
         subject={subject}
         materialFilter={practiceMaterialFilter}
-        onBack={() => { setShowFlashcardPractice(false); setFlashcardRefresh((r) => r + 1); setLearningTimeRefresh((r) => r + 1) }}
+        onBack={() => {
+          pauseMiniFocusSession()
+          setShowFlashcardPractice(false)
+          setFlashcardRefresh((r) => r + 1)
+          setLearningTimeRefresh((r) => r + 1)
+        }}
       />
     )
   }
@@ -373,6 +382,8 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
         <span className="inline-block rotate-180 text-base">➜</span>
         Zurück zur Übersicht
       </button>
+
+      <MiniFocusHint />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_430px]">
         <div className="space-y-4">
@@ -529,8 +540,8 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
 
       {showFullSubjectPlan && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/35 p-4">
-          <div className="max-h-[92vh] w-full max-w-6xl overflow-auto rounded-2xl border border-studiio-lavender/50 bg-white p-4 shadow-xl">
-            <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="flex h-[min(92dvh,calc(100dvh-2rem))] min-h-0 w-full max-w-6xl max-h-[92vh] flex-col overflow-hidden rounded-2xl border border-studiio-lavender/50 bg-white p-4 shadow-xl">
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
               <h3 className="text-base font-semibold text-studiio-ink">Fachplan</h3>
               <button
                 type="button"
@@ -540,14 +551,17 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
                 Schließen
               </button>
             </div>
-            <SubjectPlanMode
-              user={user}
-              subject={subject}
-              showHeader={false}
-              showCatalog
-              interactive
-              allowSubjectSelection
-            />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <SubjectPlanMode
+                user={user}
+                subject={subject}
+                showHeader={false}
+                showCatalog
+                interactive
+                allowSubjectSelection
+                fillParent
+              />
+            </div>
           </div>
         </div>
       )}
