@@ -25,6 +25,9 @@ Die App erstellt automatisch Vokabeln/Karteikarten, trackt den Fortschritt und h
 - Push-Nachrichten: Make (ehemals Integromat)
 - Hosting: Vercel
 
+### Supabase-SQL für Lisa
+- Braucht sie Migrationen oder fragt sie nach SQL: **immer** den **vollständigen SQL-Inhalt** der passenden Datei(en) aus `database/` in die Antwort kopieren (plus kurz der Dateiname/Pfad zum Ablegen im Repo), nicht nur „die Datei liegt im Ordner“. Reihenfolge: erst prüfen ob `learning_plan_tasks` existiert (`database/supabase-learning-plan.sql`), dann optionale `alter`-Skripte — `add column if not exists` ist idempotent.
+
 ## Wichtige Konstanten (in separater config.js speichern)
 - MAX_STORAGE_PER_USER_MB = 20 // Einfach anpassbar
 - DEFAULT_EXAM_TIMER_MINUTES = 90 // Einfach anpassbar

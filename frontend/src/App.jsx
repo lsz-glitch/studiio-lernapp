@@ -58,16 +58,6 @@ function getDateRangeForKey(dateKey) {
   return { startIso: start.toISOString(), endIso: end.toISOString() }
 }
 
-function dayDiffFromToday(dayKey) {
-  if (!dayKey) return null
-  const target = new Date(`${dayKey}T00:00:00`)
-  if (Number.isNaN(target.getTime())) return null
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const diffMs = today.getTime() - target.getTime()
-  return Math.round(diffMs / (24 * 60 * 60 * 1000))
-}
-
 function getTaskTypeLabel(type) {
   if (type === 'tutor') return 'Tutor'
   if (type === 'vocab') return 'Vokabeln'
@@ -96,18 +86,28 @@ function formatMmSsFromMs(ms) {
   return `${mm}:${String(ss).padStart(2, '0')}`
 }
 
-function taskScheduledOnOrBeforeToday(task, todayKey) {
+/** Aufgabe ist am angegebenen Kalendertag (lokal) geplant — z. B. nur „heute“ für den Start-Dialog. */
+function taskScheduledOnLocalDay(task, dayKey) {
   if (!task?.scheduled_at) return false
   const d = new Date(task.scheduled_at)
   if (Number.isNaN(d.getTime())) return false
-  const key = toLocalDateKey(d)
-  return key <= todayKey
+  return toLocalDateKey(d) === dayKey
 }
 
 function isMissingExternalUrlColumn(error) {
   const code = String(error?.code || '')
   const msg = String(error?.message || '').toLowerCase()
   return code === '42703' || (msg.includes('external_url') && msg.includes('column'))
+}
+
+/** Wenn die Spalte noch nicht angelegt wurde: database/supabase-learning-plan-carryover-prompted.sql */
+function isMissingCarryoverPromptedColumn(error) {
+  const code = String(error?.code || '')
+  const msg = String(error?.message || '').toLowerCase()
+  return (
+    code === '42703' ||
+    (msg.includes('carryover_prompted') && (msg.includes('column') || msg.includes('does not exist')))
+  )
 }
 
 const WELCOME_SNOOZE_KEY = 'studiio_welcome_flow_snooze_until'
@@ -157,7 +157,6 @@ function App() {
   const [sessionRestoreDone, setSessionRestoreDone] = useState(false)
   const [carryoverModal, setCarryoverModal] = useState({
     open: false,
-    mode: 'yesterday', // yesterday | all_open
     tasks: [],
     selectedIds: [],
     loading: false,
@@ -275,36 +274,34 @@ function App() {
           return
         }
 
-        const today = toLocalDateKey()
         const yesterdayDate = new Date()
         yesterdayDate.setDate(yesterdayDate.getDate() - 1)
         const yesterday = toLocalDateKey(yesterdayDate)
 
-        const { data: streakData } = await supabase
-          .from('user_streaks')
-          .select('last_activity_date')
-          .eq('user_id', user.id)
-          .maybeSingle()
-        const lastActivity = streakData?.last_activity_date ? String(streakData.last_activity_date).slice(0, 10) : null
-        const daysSinceLastActivity = dayDiffFromToday(lastActivity)
-        const mode = daysSinceLastActivity != null && daysSinceLastActivity <= 1 ? 'yesterday' : 'all_open'
-
-        let query = supabase
-          .from('learning_plan_tasks')
-          .select('id, title, type, scheduled_at, carryover_prompted_at')
-          .eq('user_id', user.id)
-          .is('completed_at', null)
-          .is('carryover_prompted_at', null)
-
-        if (mode === 'yesterday') {
+        /** Nur Aufgaben von gestern (auf „heute“ beziehbar), kein alter Backlog aus vielen Tagen. */
+        function buildCarryoverQuery(filterPromptedNull) {
           const { startIso, endIso } = getDateRangeForKey(yesterday)
-          query = query.gte('scheduled_at', startIso).lt('scheduled_at', endIso)
-        } else {
-          const { startIso: todayStartIso } = getDateRangeForKey(today)
-          query = query.lt('scheduled_at', todayStartIso)
+          let q = supabase
+            .from('learning_plan_tasks')
+            .select(
+              filterPromptedNull
+                ? 'id, title, type, scheduled_at, carryover_prompted_at'
+                : 'id, title, type, scheduled_at',
+            )
+            .eq('user_id', user.id)
+            .is('completed_at', null)
+            .gte('scheduled_at', startIso)
+            .lt('scheduled_at', endIso)
+          if (filterPromptedNull) q = q.is('carryover_prompted_at', null)
+          return q.order('scheduled_at', { ascending: true })
         }
 
-        const { data, error } = await query.order('scheduled_at', { ascending: true })
+        let { data, error } = await buildCarryoverQuery(true)
+        if (error && isMissingCarryoverPromptedColumn(error)) {
+          const r2 = await buildCarryoverQuery(false)
+          data = r2.data
+          error = r2.error
+        }
         if (!mounted) return
         if (error) {
           console.error('Übernahme-Dialog: Aufgaben laden fehlgeschlagen:', error)
@@ -318,7 +315,6 @@ function App() {
 
         setCarryoverModal({
           open: true,
-          mode,
           tasks,
           selectedIds: tasks.map((t) => t.id),
           loading: false,
@@ -336,7 +332,7 @@ function App() {
     }
   }, [user?.id, authLoading])
 
-  // Start-Hinweis: optional zuerst Tutor fortsetzen, sonst Aufgabenwahl (mehrfach am Tag möglich; Snooze 10 Min.)
+  // Start-Hinweis: erst nach Übernahme-Dialog (carryoverModal.open false, planPickReady true). Snooze 10 Min. möglich.
   // `welcomeStartOpen` gehört nicht in die Dependencies: beim Schließen (z. B. „Zum Lernplan“) würde der Effect
   // sonst sofort erneut laufen und den Dialog wieder öffnen.
   useEffect(() => {
@@ -392,7 +388,8 @@ function App() {
         if (progErr) console.error('Start-Dialog: Tutor-Fortschritt laden fehlgeschlagen:', progErr)
 
         const subjects = subjectRows || []
-        const open = (taskRows || []).filter((t) => taskScheduledOnOrBeforeToday(t, todayKey))
+        /* Start-Dialog: nur Aufgaben, die heute fällig sind (nicht der ganze Überfälligkeits-Backlog). */
+        const open = (taskRows || []).filter((t) => taskScheduledOnLocalDay(t, todayKey))
 
         let resumeHint = null
         const prog = Array.isArray(progList) ? progList[0] : null
@@ -680,6 +677,7 @@ function App() {
     const selectedTasks = carryoverModal.tasks.filter((t) => selectedSet.has(t.id))
 
     setCarryoverModal((prev) => ({ ...prev, loading: true }))
+    let rememberDayInStorage = true
     try {
       if (moveSelected) {
         // Ausgewählte Aufgaben auf heute verschieben (Datum heute, Uhrzeit beibehalten)
@@ -687,36 +685,53 @@ function App() {
           const current = new Date(task.scheduled_at)
           const today = new Date()
           today.setHours(current.getHours(), current.getMinutes(), 0, 0)
-          await supabase
+          const { error: moveErr } = await supabase
             .from('learning_plan_tasks')
             .update({ scheduled_at: today.toISOString() })
             .eq('id', task.id)
             .eq('user_id', user.id)
+          if (moveErr) {
+            console.error('Übernahme-Dialog: Verschieben fehlgeschlagen:', moveErr)
+            rememberDayInStorage = false
+            break
+          }
         }
       }
 
-      if (markAsPrompted) {
+      if (rememberDayInStorage && markAsPrompted) {
         // Für alle angezeigten Aufgaben merken, dass bereits gefragt wurde (nur einmal pro Aufgabe).
         const allShownIds = carryoverModal.tasks.map((t) => t.id)
         if (allShownIds.length) {
-          await supabase
+          const { error: promptErr } = await supabase
             .from('learning_plan_tasks')
             .update({ carryover_prompted_at: nowIso })
             .in('id', allShownIds)
             .eq('user_id', user.id)
+          if (promptErr) {
+            if (isMissingCarryoverPromptedColumn(promptErr)) {
+              console.warn(
+                'Übernahme-Dialog: Spalte carryover_prompted_at fehlt — bitte database/supabase-learning-plan-carryover-prompted.sql in Supabase ausführen.',
+              )
+            } else {
+              console.error('Übernahme-Dialog: Merken „schon gefragt“ fehlgeschlagen:', promptErr)
+              rememberDayInStorage = false
+            }
+          }
         }
       }
     } catch (e) {
+      rememberDayInStorage = false
       console.error('Übernahme-Dialog: Speichern fehlgeschlagen', e)
     } finally {
-      if (typeof window !== 'undefined') window.localStorage.setItem(oncePerDayKey, '1')
-      setCarryoverModal({ open: false, mode: 'yesterday', tasks: [], selectedIds: [], loading: false })
+      if (rememberDayInStorage && typeof window !== 'undefined') {
+        window.localStorage.setItem(oncePerDayKey, '1')
+      }
+      setCarryoverModal({ open: false, tasks: [], selectedIds: [], loading: false })
     }
   }
 
   const isOverviewRoot = activeView === 'overview' && !selectedSubject
   const navActiveView = selectedSubject ? 'subjects' : activeView
-  const canRemindTomorrow = carryoverModal.mode === 'all_open'
   const carryoverTypeCounts = carryoverModal.tasks.reduce((acc, task) => {
     const type = task?.type || 'manual'
     acc[type] = (acc[type] || 0) + 1
@@ -1060,7 +1075,7 @@ function App() {
               <>
                 <h3 className="text-lg font-semibold text-studiio-ink">Schön, dass du da bist, {getDisplayName(user)}!</h3>
                 <p className="mt-2 text-sm text-studiio-muted leading-relaxed">
-                  <strong className="text-studiio-ink">Womit möchtest du in zwei Minuten anfangen?</strong> Kurz orientieren — dann starten wir automatisch. Oft reichen schon{' '}
+                  <strong className="text-studiio-ink">Womit möchtest du in zwei Minuten anfangen?</strong> In der Liste sind nur Aufgaben, die <strong className="text-studiio-ink">für heute</strong> vorgesehen sind. Kurz orientieren — dann starten wir automatisch. Oft reichen schon{' '}
                   <strong className="text-studiio-ink">wenige Minuten Fokus</strong>, um gut reinzukommen; du entscheidest, wie lange du dranbleibst.{' '}
                   <span className="text-studiio-ink/90">
                     Passt nichts hier? Im Lernplan siehst du alle geplanten Aufgaben und kannst dir eine neue anlegen.
@@ -1240,14 +1255,10 @@ function App() {
               {getGreetingByHour()}, {getDisplayName(user)}! 🌷
             </h3>
             <p className="mt-1 text-sm text-studiio-muted">
-              {carryoverModal.mode === 'yesterday'
-                ? 'Schön, dass du heute lernst. Welche offenen Aufgaben von gestern möchtest du heute mitnehmen?'
-                : 'Willkommen zurück! Welche offenen Aufgaben aus den letzten Tagen möchtest du heute übernehmen?'}
+              Schön, dass du heute lernst. Hier sind nur deine <strong className="text-studiio-ink">offenen Aufgaben von gestern</strong> — welche möchtest du auf <strong className="text-studiio-ink">heute</strong> legen?
             </p>
             <p className="mt-1 text-xs text-studiio-muted">
-              {canRemindTomorrow
-                ? 'Du kannst auch auf „Morgen erinnern“ tippen, wenn du heute bewusst nichts verschieben möchtest.'
-                : 'Wenn du heute nichts verschieben möchtest, nutze „Heute nichts verschieben“. Dann fragen wir diese Aufgaben nicht erneut.'}
+              Wenn du heute nichts verschieben möchtest, nutze „Heute nichts verschieben“. Danach kannst du wählen, womit du anfangen möchtest.
             </p>
             <p className="mt-1 text-xs font-medium text-studiio-accent">
               {getMotivationByHour()}
@@ -1308,16 +1319,6 @@ function App() {
               >
                 Heute nichts verschieben
               </button>
-              {canRemindTomorrow && (
-                <button
-                  type="button"
-                  onClick={() => handleCarryoverSubmit({ moveSelected: false, markAsPrompted: false })}
-                  disabled={carryoverModal.loading}
-                  className="rounded-lg border border-studiio-lavender/70 px-4 py-2.5 text-sm font-medium text-studiio-muted hover:text-studiio-ink hover:bg-studiio-lavender/30"
-                >
-                  Morgen erinnern
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => handleCarryoverSubmit({ moveSelected: true, markAsPrompted: true })}

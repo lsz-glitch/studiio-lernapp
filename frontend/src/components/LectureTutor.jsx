@@ -291,6 +291,7 @@ function LectureTutorInner({ user, subject, material, onBack }) {
   }, [subject?.id, material?.id, user?.id])
 
   useEffect(() => {
+    let cancelled = false
     let objectUrl
     async function loadUrl() {
       console.log('[LectureTutor] download wird aufgerufen:', {
@@ -301,6 +302,8 @@ function LectureTutorInner({ user, subject, material, onBack }) {
       const { data, error } = await supabase.storage
         .from('materials')
         .download(material.storage_path)
+
+      if (cancelled) return
 
       if (error) {
         console.error('[LectureTutor] Fehler beim Download der PDF:', error)
@@ -332,20 +335,34 @@ function LectureTutorInner({ user, subject, material, onBack }) {
           return
         }
 
+        if (cancelled) return
+
         pdfBlobRef.current = data
-        objectUrl = URL.createObjectURL(data)
-        setPdfUrl(objectUrl)
+        const nextUrl = URL.createObjectURL(data)
+        objectUrl = nextUrl
+        if (cancelled) {
+          URL.revokeObjectURL(nextUrl)
+          objectUrl = undefined
+          return
+        }
+        setPdfUrl(nextUrl)
         setPdfError(null)
       } catch (e) {
-        console.error('[LectureTutor] Fehler beim Erzeugen der Blob-URL:', e)
-        setPdfError('Die PDF-URL konnte nicht erzeugt werden (Blob-URL Fehler).')
+        if (!cancelled) {
+          console.error('[LectureTutor] Fehler beim Erzeugen der Blob-URL:', e)
+          setPdfError('Die PDF-URL konnte nicht erzeugt werden (Blob-URL Fehler).')
+        }
       }
     }
 
     loadUrl()
 
     return () => {
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      cancelled = true
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = undefined
+      }
       pdfBlobRef.current = null
     }
   }, [material.storage_path])
