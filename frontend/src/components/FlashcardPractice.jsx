@@ -59,6 +59,8 @@ export default function FlashcardPractice({ user, cards, onBack, onEditCard, onC
   const [savedChoiceExplanations, setSavedChoiceExplanations] = useState({})
   const [explanationSaving, setExplanationSaving] = useState(false)
   const [openAnswerQuality, setOpenAnswerQuality] = useState(null)
+  /** Pro Session nur einmal Lernplan-Vokabel-Tasks abschließen (nach erster gespeicherter Review). */
+  const vocabPlanSyncedRef = useRef(false)
 
   useEffect(() => {
     setSessionCards(cards || [])

@@ -21,6 +21,8 @@ Lege im Ordner `backend/` eine Datei `.env` an (nicht versioniert). Siehe `backe
 
 Ohne Supabase-Variablen funktioniert der Claude-Proxy weiterhin; nur der Endpoint `/api/pdf-text` (PDF-Text für Tutor/Karteikarten) schlägt dann fehl.
 
+Optional: **`BUILD_MATERIAL_CONTEXT_PAGE_AI=true`** — aktiviert pro PDF-Seite einen zusätzlichen KI-Aufruf beim Aufbau des Seitenkontexts (höhere Qualität für komplexe Folien, deutlich höhere Kosten). Standard ohne diese Variable: nur Textauszug.
+
 ## Endpoints
 
 | Methode | Pfad | Beschreibung |

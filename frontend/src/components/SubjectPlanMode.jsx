@@ -187,6 +187,8 @@ export default function SubjectPlanMode({
   onActiveSubjectChange,
   /** Wenn true: Höhe kommt vom Eltern-Container (z. B. Modal) statt Viewport-Rechnung. */
   fillParent = false,
+  /** Erhöhen, wenn der Elternteil z. B. Vokabeln erstellt hat — Plan-Tasks neu aus DB laden. */
+  tasksReloadKey = 0,
 }) {
   const [tasks, setTasks] = useState([])
   const [allTasks, setAllTasks] = useState([])
@@ -317,7 +319,7 @@ export default function SubjectPlanMode({
         setLoading(false)
       })
     return () => { mounted = false }
-  }, [user?.id, activeSubjectId])
+  }, [user?.id, activeSubjectId, tasksReloadKey])
 
   useEffect(() => {
     if (!user?.id || !activeSubjectId) return

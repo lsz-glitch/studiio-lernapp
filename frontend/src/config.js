@@ -26,6 +26,35 @@ export const POMODORO_CYCLES_BEFORE_LONG_BREAK = 4
 export const DEFAULT_MONTHLY_AI_BUDGET_USD = 10
 
 /**
+ * KI-Tutor: max. Zeichen aus **PDF** und **Fachkontext** pro Claude-Anfrage (Eingabe-Tokens).
+ * Kleinere Werte = weniger Kosten; der Ausschnitt bezieht sich ohnehin auf die aktuell sichtbaren Folien.
+ */
+export const TUTOR_KI_MAX_PDF_CHARS = 12000
+/** Bei Rückfrage / Antwort auf Verständnisfrage: kleinerer PDF-Ausschnitt (weniger Tokens). */
+export const TUTOR_KI_MAX_PDF_CHARS_FOLLOWUP = 7500
+export const TUTOR_KI_MAX_SUBJECT_CONTEXT_CHARS = 10000
+/** Fachkontext in Folge-Nachrichten, falls aktiviert (kleiner als Erklärmodus). */
+export const TUTOR_KI_MAX_SUBJECT_CONTEXT_CHARS_FOLLOWUP = 4500
+/** Seitenkontext (Kombi aus summaries) — Obergrenze pro Anfrage. */
+export const TUTOR_KI_MAX_PAGE_CONTEXT_CHARS = 10000
+export const TUTOR_KI_MAX_PAGE_CONTEXT_CHARS_FOLLOWUP = 4500
+/** Letzte Chat-Turns (Nutzer+Tutor) für Antwortmodus, Zeichen gesamt. */
+export const TUTOR_ANSWER_CHAT_TRANSCRIPT_MAX_CHARS = 10000
+
+/**
+ * Fachkontext = Text aus **allen** Unterlagen des Fachs — jede Tutor-Anfrage wird deutlich teurer.
+ * Standard: **aus** (nur aktuelle PDF + Seitenkontext). Für Querverweise zu Übungen/anderen PDFs in
+ * derselben Anfrage: in `.env` setzen: `VITE_TUTOR_ATTACH_SUBJECT_CONTEXT=true`
+ */
+export const TUTOR_ATTACH_SUBJECT_CONTEXT =
+  String(import.meta.env.VITE_TUTOR_ATTACH_SUBJECT_CONTEXT || '').toLowerCase() === 'true'
+
+/** Max. Antwortlänge Tutor „Erklärung“ (Output-Tokens). */
+export const TUTOR_CLAUDE_MAX_TOKENS_EXPLAIN = 768
+/** Max. Antwortlänge bei Rückfragen / Übungs-Chat über callClaude. */
+export const TUTOR_CLAUDE_MAX_TOKENS_CHAT = 768
+
+/**
  * Basis-URL des Backend-Servers (Claude-Proxy & API). In Production VITE_API_BASE setzen
  * (z. B. https://dein-backend.example.com — ohne /api am Ende, ohne Slash am Ende).
  */

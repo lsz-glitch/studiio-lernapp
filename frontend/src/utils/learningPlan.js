@@ -121,6 +121,32 @@ export async function completeTutorTasksForMaterial(userId, materialId) {
   }
 }
 
+/**
+ * Lernplan-Aufgaben „Vokabeln erstellen“ / „Vokabeln erstellen: …“ (type `manual` + material_id)
+ * nach erfolgreicher KI-Erstellung abhaken — gleicher Katalog wie SubjectPlanMode.
+ */
+export async function completeVocabCreateTasksForMaterial(userId, subjectId, materialId) {
+  if (!userId || !subjectId || !materialId) return
+  const { data: tasks, error } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('user_id', userId)
+    .eq('subject_id', subjectId)
+    .eq('material_id', materialId)
+    .eq('type', 'manual')
+    .is('completed_at', null)
+    .ilike('title', 'Vokabeln erstellen%')
+  if (error) {
+    console.error('[learningPlan] completeVocabCreateTasksForMaterial:', error)
+    return
+  }
+  if (!tasks?.length) return
+  const now = new Date().toISOString()
+  const ids = tasks.map((t) => t.id).filter(Boolean)
+  if (!ids.length) return
+  await supabase.from(TABLE).update({ completed_at: now }).eq('user_id', userId).in('id', ids)
+}
+
 /** Vokabel-Tasks für dieses Fach (fällig heute oder in der Vergangenheit) als erledigt markieren */
 export async function completeVocabTasksForSubjectToday(userId, subjectId) {
   if (!userId || !subjectId) return

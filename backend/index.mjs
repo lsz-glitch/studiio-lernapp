@@ -78,6 +78,20 @@ const materialTextCache = new Map()
 const materialPageContextCache = new Map()
 const MATERIAL_CONTEXT_VERSION = 1
 const MAX_PAGE_CHARS = 7000
+/**
+ * `true`: pro PDF-Seite ein KI-Aufruf für Zusammenfassung (teuer bei langen Skripten).
+ * Standard: **aus** — nur Textauszug (`text_only`). Für bessere Schaubild-/Strukturbeschreibung in `.env`:
+ * BUILD_MATERIAL_CONTEXT_PAGE_AI=true
+ */
+const BUILD_MATERIAL_CONTEXT_PAGE_AI =
+  String(process.env.BUILD_MATERIAL_CONTEXT_PAGE_AI ?? '').toLowerCase() === 'true'
+/** Zeichen aus dem Gesamtskript, die pro Seiten-Zusammenfassung an die KI gehen (nur wenn PAGE_AI an). */
+const LECTURE_OVERVIEW_CHARS_FOR_PAGE_CONTEXT = 10000
+if (BUILD_MATERIAL_CONTEXT_PAGE_AI) {
+  console.log('[Studiio Backend] BUILD_MATERIAL_CONTEXT_PAGE_AI=true — pro PDF-Seite ein Kontext-KI-Aufruf.')
+} else {
+  console.log('[Studiio Backend] Seitenkontext ohne KI (nur PDF-Text). Zum Aktivieren: BUILD_MATERIAL_CONTEXT_PAGE_AI=true')
+}
 const shareRateLimit = new Map()
 const AI_USAGE_TABLE = 'ai_usage_logs'
 
@@ -639,7 +653,7 @@ app.post('/api/build-material-context', async (req, res) => {
     const { text: fullText, numPages } = await extractPdfTextFromStoragePath(storagePath)
     const rawPages = splitPdfTextIntoPages(fullText, numPages)
     const limitedPages = rawPages.map((t) => String(t || '').slice(0, MAX_PAGE_CHARS))
-    const lectureOverview = fullText.slice(0, 16000)
+    const lectureOverview = fullText.slice(0, LECTURE_OVERVIEW_CHARS_FOR_PAGE_CONTEXT)
 
     const pages = []
     let contextAiFailureBody = null
@@ -651,7 +665,7 @@ app.post('/api/build-material-context', async (req, res) => {
       let combinedSummary = pageText
       let sourceType = 'text_only'
 
-      if (apiKey) {
+      if (BUILD_MATERIAL_CONTEXT_PAGE_AI && apiKey) {
         const system =
           'Du erstellst einen präzisen Seitenkontext für Lernende. ' +
           'Wenn Text visuell wirkt (z.B. Schaubild-Labels), beschreibe die Struktur in Worten. ' +
@@ -665,7 +679,7 @@ app.post('/api/build-material-context', async (req, res) => {
           provider,
           apiKey,
           model: provider === 'anthropic' ? 'claude-sonnet-4-20250514' : undefined,
-          maxTokens: 650,
+          maxTokens: 400,
           system,
           userContent,
           userId,

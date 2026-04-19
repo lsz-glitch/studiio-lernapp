@@ -62,6 +62,25 @@ class SubjectDetailErrorBoundary extends React.Component {
   }
 }
 
+async function countDueFlashcards(userId, subjectId, materialId = null) {
+  if (!userId || !subjectId) return 0
+  const nowIso = new Date().toISOString()
+  let q = supabase
+    .from('flashcards')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('subject_id', subjectId)
+    .eq('is_draft', false)
+    .or(`next_review_at.is.null,next_review_at.lte.${nowIso}`)
+  if (materialId) q = q.eq('material_id', materialId)
+  const { count, error } = await q
+  if (error) {
+    console.error('countDueFlashcards:', error)
+    return 0
+  }
+  return typeof count === 'number' ? count : 0
+}
+
 function formatCountdown(examDate) {
   if (!examDate) return 'Kein Termin eingetragen'
   const today = new Date()
@@ -108,6 +127,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
     setExamDateError('')
   }, [subject?.id, subject?.exam_date])
   const [showFullSubjectPlan, setShowFullSubjectPlan] = useState(false)
+  const [practiceUnavailableMessage, setPracticeUnavailableMessage] = useState('')
 
   useEffect(() => {
     if (!user?.id || !subject?.id) return
@@ -265,14 +285,26 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteText, lastSavedNote, noteHydrated, noteLoading, user?.id, subject?.id])
 
-  // Direkt vom Dashboard „Vokabeln üben“ geöffnet?
+  // Direkt vom Dashboard „Vokabeln üben“: nur öffnen, wenn fällige Karten existieren.
   React.useEffect(() => {
-    if (openToPractice && subject?.id) {
-      setPracticeMaterialFilter(null)
-      setShowFlashcardPractice(true)
+    if (!openToPractice || !subject?.id || !user?.id) return
+    let cancelled = false
+    ;(async () => {
+      const n = await countDueFlashcards(user.id, subject.id, null)
+      if (cancelled) return
+      if (n > 0) {
+        setPracticeMaterialFilter(null)
+        setShowFlashcardPractice(true)
+        setPracticeUnavailableMessage('')
+      } else {
+        setPracticeUnavailableMessage('Es sind keine fälligen Vokabeln zum Üben da.')
+      }
       onOpenToPracticeHandled?.()
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [openToPractice, subject?.id])
+  }, [openToPractice, subject?.id, user?.id])
 
   // Direkt vom Lernplan „Datei mit Tutor durcharbeiten“ geöffnet?
   React.useEffect(() => {
@@ -315,7 +347,20 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       return
     }
     if (task.type === 'vocab') {
-      setPracticeMaterialFilter(task.material_id || null)
+      const mid = task.material_id || null
+      const n = await countDueFlashcards(user.id, subject.id, mid)
+      if (n < 1) {
+        setPracticeUnavailableMessage(
+          mid ? 'Für diese Aufgabe gibt es keine fälligen Vokabeln.' : 'Es sind keine fälligen Vokabeln zum Üben da.',
+        )
+        return
+      }
+      if (mid) {
+        const material = await resolveMaterialById(mid)
+        setPracticeMaterialFilter(material || { id: mid, filename: task.title || '' })
+      } else {
+        setPracticeMaterialFilter(null)
+      }
       setShowFlashcardPractice(true)
       return
     }
@@ -384,6 +429,19 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
       </button>
 
       <MiniFocusHint />
+
+      {practiceUnavailableMessage && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          <p className="min-w-0">{practiceUnavailableMessage}</p>
+          <button
+            type="button"
+            className="shrink-0 text-amber-900 underline text-xs font-medium"
+            onClick={() => setPracticeUnavailableMessage('')}
+          >
+            OK
+          </button>
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_430px]">
         <div className="space-y-4">
@@ -472,7 +530,19 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
             refreshTrigger={flashcardRefresh + tutorRefresh}
             onOpenLecture={(material) => setActiveLecture(material)}
             onOpenFlashcardCreate={(material) => setFlashcardMaterial(material)}
-            onStartPractice={(materialFilter = null) => {
+            onStartPractice={async (materialFilter = null) => {
+              if (!user?.id || !subject?.id) return
+              const materialId = materialFilter?.id || null
+              const n = await countDueFlashcards(user.id, subject.id, materialId)
+              if (n < 1) {
+                setPracticeUnavailableMessage(
+                  materialId
+                    ? 'Für diese Datei gibt es keine fälligen Vokabeln zum Üben.'
+                    : 'Es sind keine fälligen Vokabeln zum Üben da.',
+                )
+                return
+              }
+              setPracticeUnavailableMessage('')
               setPracticeMaterialFilter(materialFilter)
               setShowFlashcardPractice(true)
             }}
@@ -520,6 +590,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
               showCatalog={false}
               interactive={false}
               onTaskClick={handlePlannedTaskClick}
+              tasksReloadKey={flashcardRefresh}
             />
           </section>
         </aside>
@@ -560,6 +631,7 @@ function SubjectDetailInner({ user, subject, onBack, openToPractice, onOpenToPra
                 interactive
                 allowSubjectSelection
                 fillParent
+                tasksReloadKey={flashcardRefresh}
               />
             </div>
           </div>

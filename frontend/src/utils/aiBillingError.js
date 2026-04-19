@@ -6,6 +6,11 @@
 export const MSG_ANTHROPIC_LOW_CREDIT_DE =
   'Dein Anthropic-Guthaben reicht gerade nicht (oder Billing ist ausstehend). Bitte unter console.anthropic.com im Bereich „Plans & Billing“ aufladen – danach funktionieren KI-Tutor und Vokabeln wieder.'
 
+export const MSG_ANTHROPIC_RATE_LIMIT_DE =
+  'Anthropic meldet: **Limit für Eingabe-Token pro Minute** (Rate Limit deiner Organisation). ' +
+  'Das betrifft nicht die **Länge der Antwort**, sondern alles, was in derselben Minute **hineingeschickt** wurde: z. B. großer PDF-Text, Fachkontext, Seitenkontext für viele Folien, Tutor-Anfragen, Vokabeln – oft **mehrere Aufrufe hintereinander**. ' +
+  'Bitte **etwa eine Minute warten** und erneut versuchen, oder weniger KI-Aktionen gleichzeitig starten. Infos: https://docs.claude.com/en/api/rate-limits'
+
 function appendParts(parts, value) {
   if (value == null) return
   if (typeof value === 'string' && value.trim()) parts.push(value)
@@ -43,9 +48,20 @@ export function isLikelyAnthropicLowCreditOrBilling(fullText) {
   return false
 }
 
+export function isLikelyAnthropicRateLimitError(fullText) {
+  const t = String(fullText || '').toLowerCase()
+  if (!t.trim()) return false
+  if (t.includes('rate limit')) return true
+  if (t.includes('tokens per minute')) return true
+  if (t.includes('too many requests')) return true
+  if (t.includes('429') && (t.includes('token') || t.includes('rate'))) return true
+  return false
+}
+
 export function userFacingMessageForAiHttpError({ responseText, parsed }) {
   const blob = extractClaudeProxyErrorText(parsed, responseText)
   if (isLikelyAnthropicLowCreditOrBilling(blob)) return MSG_ANTHROPIC_LOW_CREDIT_DE
+  if (isLikelyAnthropicRateLimitError(blob)) return MSG_ANTHROPIC_RATE_LIMIT_DE
   return null
 }
 

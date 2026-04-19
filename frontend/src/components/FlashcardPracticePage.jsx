@@ -7,6 +7,7 @@ import { dispatchPomodoroPauseForLeave, dispatchPomodoroResumeAfterTask } from '
 import { confirmFocusLeaveIfNeeded } from '../utils/focusLeaveConfirm'
 import FlashcardEditModal from './FlashcardEditModal'
 import { addLearningTime } from '../utils/learningTime'
+import { completeVocabTasksForSubjectToday } from '../utils/learningPlan'
 
 export default function FlashcardPracticePage({ user, subject, materialFilter = null, onBack }) {
   const [cards, setCards] = useState([])

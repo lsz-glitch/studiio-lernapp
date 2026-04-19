@@ -4,6 +4,7 @@ import { getApiBase } from '../config'
 import { isBackendInfoRootResponse, isLikelyHtmlResponse, MSG_API_WRONG_ENDPOINT } from '../utils/apiResponse'
 import { resolveClaudeProxyFailureMessage } from '../utils/aiBillingError'
 import { getUserAiConfig } from '../utils/aiProvider'
+import { completeVocabCreateTasksForMaterial } from '../utils/learningPlan'
 
 const FORMAT_LABELS = {
   definition: 'Definitions-Abfrage',
@@ -136,6 +137,8 @@ export default function FlashcardCreateModal({ user, subject, material, onClose,
       }))
       const { error: insertErr } = await supabase.from('flashcards').insert(rows)
       if (insertErr) throw new Error(insertErr.message || 'Speichern fehlgeschlagen.')
+
+      await completeVocabCreateTasksForMaterial(user.id, subject.id, material.id)
 
       setStep('done')
       setTimeout(() => {
